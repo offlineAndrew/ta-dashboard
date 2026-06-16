@@ -212,7 +212,7 @@ async function loadSymbols() {
     const res = await fetch('https://fapi.binance.com/fapi/v1/exchangeInfo');
     const data = await res.json();
     allSymbols = data.symbols
-      .filter(s => s.status === 'TRADING' && s.contractType === 'PERPETUAL')
+      .filter(s => s.status === 'TRADING')
       .map(s => ({ symbol: s.symbol, base: s.baseAsset, quote: s.quoteAsset }));
     symbolsLoaded = true;
   } catch (e) {
