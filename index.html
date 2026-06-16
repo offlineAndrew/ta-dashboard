@@ -39,6 +39,16 @@ button.go:disabled{background:#1a2223;color:#3d5052;cursor:default;}
 .suggest-item .pos-tag{font-size:9px;color:#9be8a8;border:1px solid #2e4a4c;border-radius:3px;padding:1px 5px;}
 
 .recent-row{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px;}
+.preset-row{display:flex;gap:8px;margin-bottom:14px;}
+.preset-btn{flex:1;background:#111718;border:1px solid #1e2a2b;border-radius:4px;color:#aab4b4;padding:9px 8px;font-size:12px;cursor:pointer;font-family:inherit;letter-spacing:.02em;}
+.preset-btn:hover{border-color:#2e4a4c;color:#d8e0e0;}
+.preset-btn.active{border-color:#9be8a8;color:#9be8a8;background:#0e1a1b;}
+.preset-list{margin-bottom:14px;}
+.preset-item{display:flex;justify-content:space-between;align-items:center;background:#111718;border:1px solid #1e2a2b;border-radius:6px;padding:10px 14px;margin-bottom:6px;cursor:pointer;}
+.preset-item:hover{border-color:#2e4a4c;}
+.preset-item-sym{font-size:13px;font-weight:700;color:#fff;}
+.preset-item-stats{display:flex;gap:12px;align-items:center;font-size:12px;}
+.preset-loading{padding:20px;text-align:center;color:#3a4e50;font-size:12px;}
 .recent-chip{background:#111718;border:1px solid #1e2a2b;border-radius:12px;padding:5px 11px;font-size:11px;color:#7a8a8a;cursor:pointer;}
 .recent-chip:hover{border-color:#2e4a4c;color:#d8e0e0;}
 
@@ -62,6 +72,7 @@ button.go:disabled{background:#1a2223;color:#3d5052;cursor:default;}
 .up{color:#9be8a8;} .dn{color:#ff9b9b;} .warn{color:#ffb86b;font-weight:700;} .crit{color:#ff6b6b;font-weight:700;}
 .result-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;}
 .copy-btn{background:transparent;border:1px solid #1e2a2b;border-radius:4px;color:#7a8a8a;padding:8px 14px;font-size:11px;cursor:pointer;font-family:inherit;letter-spacing:.05em;}
+.copy-btn:disabled,.copy-btn-disabled{opacity:0.4;cursor:default;}
 .copy-btn.ok{border-color:#9be8a8;color:#9be8a8;}
 .hint{margin-top:8px;padding:12px 14px;background:#0e1516;border:1px dashed #1e2a2b;border-radius:4px;font-size:11px;color:#3a4e50;text-align:center;line-height:2;}
 .empty{padding:40px 16px;text-align:center;color:#3a4e50;font-size:12px;border:1px dashed #1e2a2b;border-radius:6px;line-height:2.2;}
@@ -81,6 +92,8 @@ button.go:disabled{background:#1a2223;color:#3d5052;cursor:default;}
 .pos-sym{font-size:15px;font-weight:700;color:#fff;}
 .pos-meta{font-size:11px;color:#5a6a6b;margin-top:4px;}
 .pos-remove{background:transparent;border:none;color:#5a6a6b;cursor:pointer;font-size:16px;padding:2px 6px;}
+.pos-analyze-btn{background:#0e1a1b;border:1px solid #2e4a4c;border-radius:4px;color:#9be8a8;cursor:pointer;font-size:11px;padding:5px 10px;font-family:inherit;white-space:nowrap;}
+.pos-analyze-btn:hover{background:#143018;}
 .pos-remove:hover{color:#ff9b9b;}
 .pos-side{font-size:10px;padding:2px 7px;border-radius:3px;font-weight:700;letter-spacing:.04em;}
 .pos-side.long{background:#143018;color:#9be8a8;}
@@ -135,6 +148,14 @@ button.go:disabled{background:#1a2223;color:#3d5052;cursor:default;}
 
     <div class="recent-row" id="recentRow"></div>
 
+    <div class="preset-row" id="presetRow">
+      <button class="preset-btn" onclick="loadPresetList('gainers', this)">🚀 Топ роста</button>
+      <button class="preset-btn" onclick="loadPresetList('losers', this)">📉 Топ падения</button>
+      <button class="preset-btn" onclick="loadPresetList('volume', this)">📊 Топ объёма</button>
+    </div>
+
+    <div id="presetList" class="preset-list hidden"></div>
+
     <div id="error" class="error" style="display:none"></div>
 
     <div id="output">
@@ -157,7 +178,8 @@ button.go:disabled{background:#1a2223;color:#3d5052;cursor:default;}
   <!-- POSITIONS TAB -->
   <div id="viewPositions" class="hidden">
     <div class="input-row" id="posUpdateRow" style="margin-bottom:14px;display:none">
-      <button class="go" id="updateAllBtn" onclick="updateAllPositions()" style="flex:1">ОБНОВИТЬ ВСЕ И СКОПИРОВАТЬ СВОДКУ</button>
+      <button class="go" id="updateAllBtn" onclick="updateAllPositions()" style="flex:1">ОБНОВИТЬ ВСЕ</button>
+      <button class="copy-btn" id="copyAllBtn" onclick="copyAllSummary()" style="white-space:nowrap">КОПИРОВАТЬ СВОДКУ</button>
     </div>
     <div id="positionsList"></div>
     <div id="positionsEmpty" class="empty">
@@ -319,7 +341,10 @@ async function renderPositions() {
           <span class="pos-sym">${sym}</span>
           <span class="pos-side ${p.side === 'short' ? 'short' : 'long'}">${p.side === 'short' ? 'ШОРТ' : 'ЛОНГ'}</span>
         </div>
-        <button class="pos-remove" onclick="event.stopPropagation(); removePosition('${sym}')">✕</button>
+        <div style="display:flex;gap:6px">
+          <button class="pos-analyze-btn" onclick="event.stopPropagation(); openFromPositions('${sym}')">📊 Анализ</button>
+          <button class="pos-remove" onclick="event.stopPropagation(); removePosition('${sym}')">✕</button>
+        </div>
       </div>
       <div class="pos-meta">добавлено ${date.toLocaleString('ru')} <span id="poslive-${sym}" style="color:#3a4e50">· загрузка цены...</span></div>
 
@@ -344,15 +369,6 @@ async function renderPositions() {
       <div class="pos-pnl" id="pospnl-${sym}"></div>
     </div>`;
   }).join('');
-
-  // prevent card click-to-open when interacting with inputs
-  keys.forEach(sym => {
-    const card = document.getElementById(`poscard-${sym}`);
-    card.addEventListener('click', (e) => {
-      if (e.target.tagName === 'INPUT' || e.target.tagName === 'BUTTON') return;
-      openFromPositions(sym);
-    });
-  });
 
   // fetch live prices and compute pnl
   for (const sym of keys) {
@@ -425,6 +441,7 @@ document.addEventListener('click', (e) => {
 });
 
 function onSearchInput() {
+  hidePresetList();
   const q = document.getElementById('sym').value.trim().toUpperCase();
   if (!symbolsLoaded) { loadSymbols().then(() => filterAndShow(q)); return; }
   filterAndShow(q);
@@ -486,7 +503,14 @@ function onSearchKeydown(e) {
 function selectSymbol(sym) {
   document.getElementById('sym').value = sym.replace(currentQuote, '');
   hideSuggest();
+  hidePresetList();
   run(sym);
+}
+function hidePresetList() {
+  activePreset = null;
+  document.querySelectorAll('.preset-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('presetList').classList.add('hidden');
+  document.getElementById('presetList').innerHTML = '';
 }
 
 // ===================== INDICATOR MATH =====================
@@ -683,6 +707,65 @@ async function fetchKlines(sym,interval,limit){
   return data.map(k=>({open:parseFloat(k[1]),high:parseFloat(k[2]),low:parseFloat(k[3]),close:parseFloat(k[4]),vol:parseFloat(k[5]),qvol:parseFloat(k[7])}));
 }
 async function fetchTicker(sym){const r=await fetch(`https://fapi.binance.com/fapi/v1/ticker/24hr?symbol=${sym}`);return r.ok?r.json():null;}
+
+// ===================== PRESET LISTS (top gainers/losers/volume) =====================
+let activePreset = null;
+
+async function loadPresetList(type, btnEl) {
+  const btns = document.querySelectorAll('.preset-btn');
+  btns.forEach(b => b.classList.remove('active'));
+  if (activePreset === type) {
+    // toggle off
+    activePreset = null;
+    document.getElementById('presetList').classList.add('hidden');
+    document.getElementById('presetList').innerHTML = '';
+    document.getElementById('empty').style.display = document.getElementById('output').style.display === 'block' ? 'none' : 'block';
+    return;
+  }
+  activePreset = type;
+  if (btnEl) btnEl.classList.add('active');
+
+  const listEl = document.getElementById('presetList');
+  listEl.classList.remove('hidden');
+  listEl.innerHTML = '<div class="preset-loading">Загружаю рынок...</div>';
+  document.getElementById('output').style.display = 'none';
+  document.getElementById('empty').style.display = 'none';
+  document.getElementById('error').style.display = 'none';
+
+  try {
+    const res = await fetch('https://fapi.binance.com/fapi/v1/ticker/24hr');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    let data = await res.json();
+    data = data.filter(t => t.symbol.endsWith(currentQuote));
+
+    let sorted, labelFn;
+    if (type === 'gainers') {
+      sorted = data.sort((a, b) => parseFloat(b.priceChangePercent) - parseFloat(a.priceChangePercent)).slice(0, 20);
+      labelFn = t => `<span class="up">+${parseFloat(t.priceChangePercent).toFixed(2)}%</span>`;
+    } else if (type === 'losers') {
+      sorted = data.sort((a, b) => parseFloat(a.priceChangePercent) - parseFloat(b.priceChangePercent)).slice(0, 20);
+      labelFn = t => `<span class="dn">${parseFloat(t.priceChangePercent).toFixed(2)}%</span>`;
+    } else {
+      sorted = data.sort((a, b) => parseFloat(b.quoteVolume) - parseFloat(a.quoteVolume)).slice(0, 20);
+      labelFn = t => `<span class="muted">${fvol(parseFloat(t.quoteVolume))}</span>`;
+    }
+
+    listEl.innerHTML = sorted.map(t => {
+      const base = t.symbol.replace(currentQuote, '');
+      const ch = parseFloat(t.priceChangePercent);
+      const chC = ch >= 0 ? 'up' : 'dn';
+      return `<div class="preset-item" onclick="selectSymbol('${t.symbol}')">
+        <span class="preset-item-sym">${base}</span>
+        <div class="preset-item-stats">
+          <span class="${chC}">${ch >= 0 ? '+' : ''}${ch.toFixed(2)}%</span>
+          <span class="muted">${fvol(parseFloat(t.quoteVolume))}</span>
+        </div>
+      </div>`;
+    }).join('');
+  } catch (e) {
+    listEl.innerHTML = `<div class="preset-loading">⚠ Ошибка загрузки: ${e.message}</div>`;
+  }
+}
 async function fetchFunding(sym){const r=await fetch(`https://fapi.binance.com/fapi/v1/premiumIndex?symbol=${sym}`);return r.ok?r.json():null;}
 
 // ===================== MAIN RUN =====================
@@ -802,11 +885,14 @@ function buildTextSummary(a) {
 }
 
 // ===================== UPDATE ALL POSITIONS =====================
+let lastAllPositionsSummary = '';
+
 async function updateAllPositions() {
   const positions = getPositions();
   const keys = Object.keys(positions);
   if (!keys.length) return;
   const btn = document.getElementById('updateAllBtn');
+  const copyBtn = document.getElementById('copyAllBtn');
   btn.disabled = true;
 
   const blocks = [];
@@ -831,17 +917,30 @@ async function updateAllPositions() {
     }
   }
 
-  const fullText = blocks.join('\n\n');
+  lastAllPositionsSummary = blocks.join('\n\n');
+  btn.textContent = `✓ ОБНОВЛЕНО (${keys.length})`;
+  copyBtn.disabled = false;
+  copyBtn.classList.remove('copy-btn-disabled');
+  setTimeout(() => { btn.textContent = 'ОБНОВИТЬ ВСЕ'; btn.disabled = false; }, 2000);
+  renderPositions(); // refresh live prices/pnl in the list too
+}
+
+async function copyAllSummary() {
+  if (!lastAllPositionsSummary) {
+    await updateAllPositions();
+    if (!lastAllPositionsSummary) return;
+  }
+  const btn = document.getElementById('copyAllBtn');
   try {
-    await navigator.clipboard.writeText(fullText);
-    btn.textContent = `✓ СКОПИРОВАНО (${keys.length} монет)`;
+    await navigator.clipboard.writeText(lastAllPositionsSummary);
   } catch {
     const ta = document.createElement('textarea');
-    ta.value = fullText; ta.style.cssText = 'position:fixed;opacity:0';
+    ta.value = lastAllPositionsSummary; ta.style.cssText = 'position:fixed;opacity:0';
     document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta);
-    btn.textContent = `✓ СКОПИРОВАНО (${keys.length} монет)`;
   }
-  setTimeout(() => { btn.textContent = 'ОБНОВИТЬ ВСЕ И СКОПИРОВАТЬ СВОДКУ'; btn.disabled = false; }, 3000);
+  btn.textContent = '✓ СКОПИРОВАНО';
+  btn.classList.add('ok');
+  setTimeout(() => { btn.textContent = 'КОПИРОВАТЬ СВОДКУ'; btn.classList.remove('ok'); }, 2500);
   renderPositions(); // refresh live prices/pnl in the list too
 }
 
