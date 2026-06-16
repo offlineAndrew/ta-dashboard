@@ -156,6 +156,9 @@ button.go:disabled{background:#1a2223;color:#3d5052;cursor:default;}
 
   <!-- POSITIONS TAB -->
   <div id="viewPositions" class="hidden">
+    <div class="input-row" id="posUpdateRow" style="margin-bottom:14px;display:none">
+      <button class="go" id="updateAllBtn" onclick="updateAllPositions()" style="flex:1">ОБНОВИТЬ ВСЕ И СКОПИРОВАТЬ СВОДКУ</button>
+    </div>
     <div id="positionsList"></div>
     <div id="positionsEmpty" class="empty">
       Нет открытых позиций<br>
@@ -296,12 +299,15 @@ async function renderPositions() {
   const keys = Object.keys(positions);
   const listEl = document.getElementById('positionsList');
   const emptyEl = document.getElementById('positionsEmpty');
+  const updateRow = document.getElementById('posUpdateRow');
   if (!keys.length) {
     listEl.innerHTML = '';
     emptyEl.style.display = 'block';
+    updateRow.style.display = 'none';
     return;
   }
   emptyEl.style.display = 'none';
+  updateRow.style.display = 'flex';
 
   // render skeleton first
   listEl.innerHTML = keys.map(sym => {
@@ -392,6 +398,13 @@ function updatePosField(sym, field, value) {
   } else if (!document.getElementById('viewPositions').classList.contains('hidden')) {
     renderPositions();
   }
+}
+
+function fillEntryFromLive(sym) {
+  const cardEl = document.getElementById(`poscard-${sym}`);
+  const price = cardEl ? cardEl.dataset.livePrice : null;
+  if (!price) return;
+  updatePosField(sym, 'entry', price);
 }
 function openFromPositions(sym) {
   switchTab('analyze');
@@ -673,6 +686,165 @@ async function fetchTicker(sym){const r=await fetch(`https://fapi.binance.com/fa
 async function fetchFunding(sym){const r=await fetch(`https://fapi.binance.com/fapi/v1/premiumIndex?symbol=${sym}`);return r.ok?r.json():null;}
 
 // ===================== MAIN RUN =====================
+// ===================== CORE ANALYSIS (data only, reusable) =====================
+async function fetchAnalysis(sym, N) {
+  N = N || 20;
+  const LIMIT = Math.max(250, N + 150);
+  const [kl15, kl1h, kl4h, kl1d, ticker, funding] = await Promise.all([
+    fetchKlines(sym, '15m', LIMIT), fetchKlines(sym, '1h', LIMIT),
+    fetchKlines(sym, '4h', LIMIT), fetchKlines(sym, '1d', LIMIT),
+    fetchTicker(sym).catch(() => null), fetchFunding(sym).catch(() => null),
+  ]);
+  const klines = { '15m': kl15, '1h': kl1h, '4h': kl4h, '1d': kl1d };
+
+  const tfData = {};
+  for (const tf of TFS) {
+    const candles = klines[tf.key];
+    const closes = candles.map(c => c.close);
+    const vols = candles.map(c => c.qvol);
+    const last = candles[candles.length - 1];
+    const recent = candles.slice(-N);
+    const vol50 = vols.slice(-50);
+    const avgVol = vol50.reduce((a, b) => a + b, 0) / vol50.length;
+    const atr = calcATR(candles, 14);
+    const boll = calcBollinger(closes, 20, 2);
+    const rsiVals = rsiSeries(closes, 6);
+    const div = detectDivergence(candles, rsiVals, 30);
+    const levels = getKeyLevels(candles.slice(-100), last.close);
+    const macdVal = calcMACD(closes);
+    const r6 = rsi(closes, 6);
+    const ma7 = sma(closes, 7), ma25 = sma(closes, 25), ma99 = sma(closes, 99);
+    tfData[tf.key] = {
+      label: tf.label, price: last.close,
+      ma7, ma25, ma99,
+      r6, r12: rsi(closes, 12), r24: rsi(closes, 24),
+      macd: macdVal,
+      atr, atrPct: atr ? atr / last.close * 100 : null,
+      boll, div, levels,
+      hi50: Math.max(...candles.slice(-50).map(c => c.high)),
+      lo50: Math.min(...candles.slice(-50).map(c => c.low)),
+      vol: last.qvol, avgVol, volRatio: last.qvol / avgVol,
+      recent, summary: candleSummary(recent),
+      distMA7: ma7 ? distPct(last.close, ma7) : null,
+      distMA25: ma25 ? distPct(last.close, ma25) : null,
+      distMA99: ma99 ? distPct(last.close, ma99) : null,
+    };
+  }
+
+  const price = tfData['15m'].price;
+  const change24 = ticker ? parseFloat(ticker.priceChangePercent) : null;
+  const vol24 = ticker ? parseFloat(ticker.quoteVolume) : null;
+  const fundingRate = funding ? parseFloat(funding.lastFundingRate) * 100 : null;
+  const markPrice = funding ? parseFloat(funding.markPrice) : null;
+
+  // ---- CHECKLIST ----
+  const d1 = tfData['1d'], d4 = tfData['4h'], d1h = tfData['1h'], d15 = tfData['15m'];
+  const checks = [];
+  const trend1d = d1.ma7 && d1.price > d1.ma7 && d1.ma7 > d1.ma25 ? 'бычий' : d1.ma7 && d1.price < d1.ma7 && d1.ma7 < d1.ma25 ? 'медвежий' : 'боковик';
+  checks.push({ ok: trend1d !== 'боковик', label: `Тренд 1D: ${trend1d}`, neutral: trend1d === 'боковик' });
+  const trend4h = d4.r6 > 50 && d4.macd && d4.macd.hist > 0 ? 'бычий' : d4.r6 < 50 && d4.macd && d4.macd.hist < 0 ? 'медвежий' : 'нейтральный';
+  checks.push({ ok: trend4h !== 'нейтральный', label: `4H подтверждает: ${trend4h}`, neutral: trend4h === 'нейтральный' });
+  const rsiOk = d1h.r6 > 20 && d1h.r6 < 80;
+  checks.push({ ok: rsiOk, label: `RSI(6) 1H: ${fn(d1h.r6)} — ${rsiOk ? 'допустимый' : 'ЭКСТРИМ ⚠'}` });
+  const volOk = d15.volRatio > 0.8;
+  checks.push({ ok: volOk, label: `Объём 15M: ${fn(d15.volRatio, 2)}x avg — ${volOk ? 'норма' : 'низкий'}` });
+  const macdOk = d1h.macd && d1h.macd.hist !== null && d1h.macd.dif !== null;
+  const macdDir = macdOk ? (d1h.macd.hist > 0 ? 'положительный' : 'отрицательный') : 'нет данных';
+  checks.push({ ok: macdOk && d1h.macd.hist !== null, label: `MACD 1H: ${macdDir}`, neutral: !macdOk });
+  const divWarn = d1h.div.bearDiv || d1h.div.bullDiv;
+  checks.push({ ok: !divWarn, label: `Дивергенция 1H: ${d1h.div.bearDiv ? 'медвежья ⚠' : d1h.div.bullDiv ? 'бычья ↑' : 'нет'}` });
+  const bollOk = d1h.boll && price > d1h.boll.lower && price < d1h.boll.upper;
+  checks.push({ ok: bollOk, label: `Bollinger 1H: ${bollOk ? 'внутри полос' : 'за полосой ⚠'}` });
+  const fundOk = fundingRate == null || Math.abs(fundingRate) < 0.1;
+  checks.push({ ok: fundOk, label: `Funding: ${fundingRate != null ? ((fundingRate >= 0 ? '+' : '') + fundingRate.toFixed(4) + '%') : '—'} ${fundOk ? 'норма' : 'ЭКСТРИМ ⚠'}` });
+
+  const score = checks.filter(c => c.ok).length;
+  const scoreLabel = score >= 7 ? 'СЕТАП СИЛЬНЫЙ — можно рассматривать вход' : score >= 5 ? 'СЕТАП СРЕДНИЙ — осторожно, уменьши размер' : 'СЕТАП СЛАБЫЙ — лучше пропустить';
+
+  return { sym, price, change24, vol24, fundingRate, markPrice, tfData, checks, score, scoreLabel, N };
+}
+
+function buildTextSummary(a) {
+  const now = new Date();
+  const chS = a.change24 == null ? '' : a.change24 >= 0 ? '+' : '';
+  const tl = [
+    `${a.sym} — ${fp(a.price)} USDT`, `${now.toLocaleString('ru')}`,
+    a.change24 != null ? `Изменение 24h: ${chS}${fn(a.change24)}%` : '',
+    a.vol24 != null ? `Объём 24h: ${fvol(a.vol24)} USDT` : '',
+    a.fundingRate != null ? `Funding: ${a.fundingRate >= 0 ? '+' : ''}${a.fundingRate.toFixed(4)}%` : '',
+    ``, `ЧЕКЛИСТ: ${a.score}/${a.checks.length} — ${a.scoreLabel}`,
+    ...a.checks.map(c => `${c.ok ? '✓' : '✗'} ${c.label}`), ``
+  ];
+  for (const tf of TFS) {
+    const t = a.tfData[tf.key]; const s = t.summary;
+    const vrT = t.volRatio > 2 ? ' ⚠ АНОМАЛ' : t.volRatio > 1.5 ? ' высокий' : t.volRatio < 0.5 ? ' низкий' : '';
+    const volBP = ((s.volUp / (s.volUp + s.volDn || 1)) * 100).toFixed(0);
+    const atrStop = t.atr ? t.price - 1.5 * t.atr : null;
+    const atrStopS = t.atr ? t.price + 1.5 * t.atr : null;
+    const bollW = t.boll ? t.boll.width : null;
+    const bollState = t.boll ? (bollW < 3 ? 'СЖАТИЕ ⚡' : bollW > 8 ? 'расширение' : 'норма') : '—';
+    tl.push(`[${t.label}] ${fp(t.price)} USDT`);
+    tl.push(`График ${s.n}св: ${s.bulls}б/${s.bears}м/${s.dojis}д | ${s.trend} | ${s.consec} ${s.consecDir} подряд`);
+    tl.push(`Посл.свеча: ${s.lcType} тело:${fn(s.lcBodyPct)}% в:${fn(s.lcUpper)}% н:${fn(s.lcLower)}%`);
+    tl.push(`ATR(14): ${fp(t.atr)} (${fn(t.atrPct)}%) | Стоп-лонг: ${fp(atrStop)} | Стоп-шорт: ${fp(atrStopS)}`);
+    tl.push(`Boll: верх ${fp(t.boll?.upper)} · mid ${fp(t.boll?.mid)} · низ ${fp(t.boll?.lower)} | Ширина: ${fn(bollW)}% ${bollState}`);
+    tl.push(`Дивергенция: ${t.div.bearDiv ? '⚠ МЕДВЕЖЬЯ' : t.div.bullDiv ? '↑ БЫЧЬЯ' : 'нет'}`);
+    tl.push(`Объём: ${fvol(t.vol)} (ratio:${fn(t.volRatio, 2)}x${vrT}) | покуп:${volBP}% прод:${100 - parseInt(volBP)}%`);
+    tl.push(`MA7: ${fp(t.ma7)} (${dir(t.price, t.ma7)} ${fpct(t.distMA7)}) MA25: ${fp(t.ma25)} (${dir(t.price, t.ma25)} ${fpct(t.distMA25)}) MA99: ${fp(t.ma99)} (${dir(t.price, t.ma99)} ${fpct(t.distMA99)})`);
+    tl.push(`RSI(6): ${fn(t.r6)}${rsiTag(t.r6)}  RSI(12): ${fn(t.r12)}  RSI(24): ${fn(t.r24)}`);
+    if (t.macd) tl.push(`DIF: ${fn(t.macd.dif, 6)} DEA: ${fn(t.macd.dea, 6)} MACD: ${fn(t.macd.hist, 6)}`);
+    if (t.levels.above.length) tl.push(`Сопр: ` + t.levels.above.map(l => `${fp(l.price)}(+${fn(distPct(l.price, t.price))}%)`).join(' · '));
+    if (t.levels.below.length) tl.push(`Подд: ` + t.levels.below.map(l => `${fp(l.price)}(${fn(distPct(l.price, t.price))}%)`).join(' · '));
+    tl.push(`Хай50: ${fp(t.hi50)}  Лоу50: ${fp(t.lo50)}`);
+    tl.push('');
+  }
+  return tl.join('\n').trim();
+}
+
+// ===================== UPDATE ALL POSITIONS =====================
+async function updateAllPositions() {
+  const positions = getPositions();
+  const keys = Object.keys(positions);
+  if (!keys.length) return;
+  const btn = document.getElementById('updateAllBtn');
+  btn.disabled = true;
+
+  const blocks = [];
+  for (const sym of keys) {
+    btn.textContent = `ОБНОВЛЯЮ ${sym}...`;
+    try {
+      const a = await fetchAnalysis(sym, 20);
+      const p = positions[sym];
+      const pnl = calcPnlPct(p.side, p.entry, a.price);
+      const header = [
+        `═══ ${sym} (${p.side === 'short' ? 'ШОРТ' : 'ЛОНГ'}) ═══`,
+        p.entry ? `Вход: ${p.entry}` : '',
+        p.stop ? `Стоп: ${p.stop}` : '',
+        p.tp1 ? `Тейк 1: ${p.tp1}` : '',
+        p.tp2 ? `Тейк 2: ${p.tp2}` : '',
+        pnl != null ? `Текущий PnL: ${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}%` : '',
+        ''
+      ].filter(Boolean).join('\n');
+      blocks.push(header + '\n' + buildTextSummary(a));
+    } catch (e) {
+      blocks.push(`═══ ${sym} ═══\nОшибка получения данных: ${e.message}`);
+    }
+  }
+
+  const fullText = blocks.join('\n\n');
+  try {
+    await navigator.clipboard.writeText(fullText);
+    btn.textContent = `✓ СКОПИРОВАНО (${keys.length} монет)`;
+  } catch {
+    const ta = document.createElement('textarea');
+    ta.value = fullText; ta.style.cssText = 'position:fixed;opacity:0';
+    document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta);
+    btn.textContent = `✓ СКОПИРОВАНО (${keys.length} монет)`;
+  }
+  setTimeout(() => { btn.textContent = 'ОБНОВИТЬ ВСЕ И СКОПИРОВАТЬ СВОДКУ'; btn.disabled = false; }, 3000);
+  renderPositions(); // refresh live prices/pnl in the list too
+}
+
 async function run(forcedSym) {
   let sym = forcedSym || (document.getElementById('sym').value.trim().toUpperCase() + currentQuote);
   if (forcedSym) sym = forcedSym;
@@ -689,82 +861,16 @@ async function run(forcedSym) {
   errEl.style.display='none';outEl.style.display='none';emptyEl.style.display='none';
 
   try{
-    const LIMIT=Math.max(250,N+150);
-    const[kl15,kl1h,kl4h,kl1d,ticker,funding]=await Promise.all([
-      fetchKlines(sym,'15m',LIMIT),fetchKlines(sym,'1h',LIMIT),
-      fetchKlines(sym,'4h',LIMIT),fetchKlines(sym,'1d',LIMIT),
-      fetchTicker(sym).catch(()=>null),fetchFunding(sym).catch(()=>null),
-    ]);
-    const klines={'15m':kl15,'1h':kl1h,'4h':kl4h,'1d':kl1d};
-
-    const tfData={};
-    for(const tf of TFS){
-      const candles=klines[tf.key];
-      const closes=candles.map(c=>c.close);
-      const vols=candles.map(c=>c.qvol);
-      const last=candles[candles.length-1];
-      const recent=candles.slice(-N);
-      const vol50=vols.slice(-50);
-      const avgVol=vol50.reduce((a,b)=>a+b,0)/vol50.length;
-      const atr=calcATR(candles,14);
-      const boll=calcBollinger(closes,20,2);
-      const rsiVals=rsiSeries(closes,6);
-      const div=detectDivergence(candles,rsiVals,30);
-      const levels=getKeyLevels(candles.slice(-100),last.close);
-      const macdVal=calcMACD(closes);
-      const r6=rsi(closes,6);
-      const ma7=sma(closes,7),ma25=sma(closes,25),ma99=sma(closes,99);
-      tfData[tf.key]={
-        label:tf.label,price:last.close,
-        ma7,ma25,ma99,
-        r6,r12:rsi(closes,12),r24:rsi(closes,24),
-        macd:macdVal,
-        atr,atrPct:atr?atr/last.close*100:null,
-        boll,div,levels,
-        hi50:Math.max(...candles.slice(-50).map(c=>c.high)),
-        lo50:Math.min(...candles.slice(-50).map(c=>c.low)),
-        vol:last.qvol,avgVol,volRatio:last.qvol/avgVol,
-        recent,summary:candleSummary(recent),
-        distMA7:ma7?distPct(last.close,ma7):null,
-        distMA25:ma25?distPct(last.close,ma25):null,
-        distMA99:ma99?distPct(last.close,ma99):null,
-      };
-    }
-
-    const price=tfData['15m'].price;
-    const change24=ticker?parseFloat(ticker.priceChangePercent):null;
-    const vol24=ticker?parseFloat(ticker.quoteVolume):null;
-    const fundingRate=funding?parseFloat(funding.lastFundingRate)*100:null;
-    const markPrice=funding?parseFloat(funding.markPrice):null;
-    const now=new Date();
+    const a = await fetchAnalysis(sym, N);
+    const tfData = a.tfData;
+    const price = a.price, change24 = a.change24, vol24 = a.vol24, fundingRate = a.fundingRate, markPrice = a.markPrice;
+    const checks = a.checks, score = a.score, scoreLabel = a.scoreLabel;
+    const now = new Date();
 
     currentSymbol = sym;
     addRecent(sym);
 
-    // ---- CHECKLIST ----
-    const d1=tfData['1d'],d4=tfData['4h'],d1h=tfData['1h'],d15=tfData['15m'];
-    const checks=[];
-    const trend1d=d1.ma7&&d1.price>d1.ma7&&d1.ma7>d1.ma25?'бычий':d1.ma7&&d1.price<d1.ma7&&d1.ma7<d1.ma25?'медвежий':'боковик';
-    checks.push({ok:trend1d!=='боковик',label:`Тренд 1D: ${trend1d}`,neutral:trend1d==='боковик'});
-    const trend4h=d4.r6>50&&d4.macd&&d4.macd.hist>0?'бычий':d4.r6<50&&d4.macd&&d4.macd.hist<0?'медвежий':'нейтральный';
-    checks.push({ok:trend4h!=='нейтральный',label:`4H подтверждает: ${trend4h}`,neutral:trend4h==='нейтральный'});
-    const rsiOk=d1h.r6>20&&d1h.r6<80;
-    checks.push({ok:rsiOk,label:`RSI(6) 1H: ${fn(d1h.r6)} — ${rsiOk?'допустимый':'ЭКСТРИМ ⚠'}`});
-    const volOk=d15.volRatio>0.8;
-    checks.push({ok:volOk,label:`Объём 15M: ${fn(d15.volRatio,2)}x avg — ${volOk?'норма':'низкий'}`});
-    const macdOk=d1h.macd&&d1h.macd.hist!==null&&d1h.macd.dif!==null;
-    const macdDir=macdOk?(d1h.macd.hist>0?'положительный':'отрицательный'):'нет данных';
-    checks.push({ok:macdOk&&d1h.macd.hist!==null,label:`MACD 1H: ${macdDir}`,neutral:!macdOk});
-    const divWarn=d1h.div.bearDiv||d1h.div.bullDiv;
-    checks.push({ok:!divWarn,label:`Дивергенция 1H: ${d1h.div.bearDiv?'медвежья ⚠':d1h.div.bullDiv?'бычья ↑':'нет'}`});
-    const bollOk=d1h.boll&&price>d1h.boll.lower&&price<d1h.boll.upper;
-    checks.push({ok:bollOk,label:`Bollinger 1H: ${bollOk?'внутри полос':'за полосой ⚠'}`});
-    const fundOk=fundingRate==null||Math.abs(fundingRate)<0.1;
-    checks.push({ok:fundOk,label:`Funding: ${fundingRate!=null?((fundingRate>=0?'+':'')+fundingRate.toFixed(4)+'%'):'—'} ${fundOk?'норма':'ЭКСТРИМ ⚠'}`});
-
-    const score=checks.filter(c=>c.ok).length;
     const scoreColor=score>=7?'#9be8a8':score>=5?'#ffb86b':'#ff9b9b';
-    const scoreLabel=score>=7?'СЕТАП СИЛЬНЫЙ — можно рассматривать вход':score>=5?'СЕТАП СРЕДНИЙ — осторожно, уменьши размер':'СЕТАП СЛАБЫЙ — лучше пропустить';
 
     // ---- TICKER BAR ----
     const tb=document.getElementById('tickerBar');
