@@ -85,6 +85,18 @@ button.go:disabled{background:#1a2223;color:#3d5052;cursor:default;}
 .pos-side{font-size:10px;padding:2px 7px;border-radius:3px;font-weight:700;letter-spacing:.04em;}
 .pos-side.long{background:#143018;color:#9be8a8;}
 .pos-side.short{background:#301414;color:#ff9b9b;}
+.pos-fields{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:6px;margin-top:10px;padding-top:10px;border-top:1px solid #1a2425;}
+.pos-field{display:flex;flex-direction:column;gap:3px;}
+.pos-field label{font-size:9px;color:#3a4e50;letter-spacing:.04em;}
+.pos-field input{background:#0e1516;border:1px solid #1e2a2b;border-radius:3px;color:#d8e0e0;padding:5px 6px;font-size:11px;font-family:inherit;outline:none;width:100%;}
+.pos-field input:focus{border-color:#2e4a4c;}
+.pos-field.entry input{color:#d8e0e0;}
+.pos-field.stop input{color:#ff9b9b;}
+.pos-field.tp1 input,.pos-field.tp2 input{color:#9be8a8;}
+.pos-pnl{font-size:11px;font-weight:700;margin-top:8px;}
+.pos-targets-bar{display:flex;align-items:center;gap:0;height:6px;margin-top:8px;border-radius:3px;overflow:hidden;background:#1a1414;}
+.pos-edit-toggle{font-size:10px;color:#5a6a6b;cursor:pointer;margin-top:8px;text-align:center;border-top:1px dashed #1a2425;padding-top:8px;}
+.pos-edit-toggle:hover{color:#9be8a8;}
 
 #output{display:none;}
 .hidden{display:none;}
@@ -253,7 +265,33 @@ function removePosition(symbol) {
   setPositions(positions);
   renderPositions();
 }
-function renderPositions() {
+function fmtPriceSmart(p){
+  if (p == null || isNaN(p)) return '—';
+  p = parseFloat(p);
+  if (p >= 1000) return p.toFixed(2);
+  if (p >= 1) return p.toFixed(4);
+  if (p >= 0.01) return p.toFixed(5);
+  return p.toFixed(7);
+}
+
+function calcPnlPct(side, entry, current) {
+  if (!entry || !current) return null;
+  entry = parseFloat(entry); current = parseFloat(current);
+  if (!entry || isNaN(current)) return null;
+  const raw = (current - entry) / entry * 100;
+  return side === 'short' ? -raw : raw;
+}
+
+async function fetchLastPrice(symbol) {
+  try {
+    const r = await fetch(`https://fapi.binance.com/fapi/v1/ticker/price?symbol=${symbol}`);
+    if (!r.ok) return null;
+    const d = await r.json();
+    return parseFloat(d.price);
+  } catch { return null; }
+}
+
+async function renderPositions() {
   const positions = getPositions();
   const keys = Object.keys(positions);
   const listEl = document.getElementById('positionsList');
@@ -264,10 +302,12 @@ function renderPositions() {
     return;
   }
   emptyEl.style.display = 'none';
+
+  // render skeleton first
   listEl.innerHTML = keys.map(sym => {
     const p = positions[sym];
     const date = new Date(p.addedAt);
-    return `<div class="pos-card" onclick="openFromPositions('${sym}')">
+    return `<div class="pos-card" id="poscard-${sym}">
       <div class="pos-head">
         <div>
           <span class="pos-sym">${sym}</span>
@@ -275,9 +315,83 @@ function renderPositions() {
         </div>
         <button class="pos-remove" onclick="event.stopPropagation(); removePosition('${sym}')">✕</button>
       </div>
-      <div class="pos-meta">${p.entry ? 'Вход: ' + p.entry + ' · ' : ''}добавлено ${date.toLocaleString('ru')}</div>
+      <div class="pos-meta">добавлено ${date.toLocaleString('ru')} <span id="poslive-${sym}" style="color:#3a4e50">· загрузка цены...</span></div>
+
+      <div class="pos-fields">
+        <div class="pos-field entry">
+          <label>ВХОД <span style="cursor:pointer;color:#9be8a8;text-decoration:underline" onclick="fillEntryFromLive('${sym}')">⏎ тек.цена</span></label>
+          <input type="text" inputmode="decimal" id="posentry-${sym}" value="${p.entry || ''}" placeholder="0.000" onchange="updatePosField('${sym}','entry',this.value)">
+        </div>
+        <div class="pos-field stop">
+          <label>СТОП</label>
+          <input type="text" inputmode="decimal" value="${p.stop || ''}" placeholder="0.000" onchange="updatePosField('${sym}','stop',this.value)">
+        </div>
+        <div class="pos-field tp1">
+          <label>ТЕЙК 1</label>
+          <input type="text" inputmode="decimal" value="${p.tp1 || ''}" placeholder="0.000" onchange="updatePosField('${sym}','tp1',this.value)">
+        </div>
+        <div class="pos-field tp2">
+          <label>ТЕЙК 2</label>
+          <input type="text" inputmode="decimal" value="${p.tp2 || ''}" placeholder="0.000" onchange="updatePosField('${sym}','tp2',this.value)">
+        </div>
+      </div>
+      <div class="pos-pnl" id="pospnl-${sym}"></div>
     </div>`;
   }).join('');
+
+  // prevent card click-to-open when interacting with inputs
+  keys.forEach(sym => {
+    const card = document.getElementById(`poscard-${sym}`);
+    card.addEventListener('click', (e) => {
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'BUTTON') return;
+      openFromPositions(sym);
+    });
+  });
+
+  // fetch live prices and compute pnl
+  for (const sym of keys) {
+    const p = positions[sym];
+    const price = await fetchLastPrice(sym);
+    const liveEl = document.getElementById(`poslive-${sym}`);
+    const pnlEl = document.getElementById(`pospnl-${sym}`);
+    if (!liveEl || !pnlEl) continue;
+    if (price == null) {
+      liveEl.textContent = '· цена недоступна';
+      continue;
+    }
+    liveEl.innerHTML = `· сейчас <strong style="color:#d8e0e0">${fmtPriceSmart(price)}</strong>`;
+    const cardEl = document.getElementById(`poscard-${sym}`);
+    if (cardEl) cardEl.dataset.livePrice = price;
+    const pnl = calcPnlPct(p.side, p.entry, price);
+    if (pnl == null) {
+      pnlEl.innerHTML = '<span style="color:#3a4e50">укажи вход для расчёта PnL</span>';
+    } else {
+      const color = pnl >= 0 ? '#9be8a8' : '#ff9b9b';
+      let distInfo = '';
+      if (p.stop) {
+        const distStop = calcPnlPct(p.side, p.entry, p.stop);
+        distInfo += ` · до стопа ${distStop != null ? distStop.toFixed(1) : '—'}%`;
+      }
+      if (p.tp1) {
+        const distTp1 = calcPnlPct(p.side, price, p.tp1);
+        distInfo += ` · до тейка1 ${distTp1 != null ? (distTp1).toFixed(1) : '—'}%`;
+      }
+      pnlEl.innerHTML = `<span style="color:${color}">PnL: ${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}%</span><span style="color:#3a4e50;font-weight:400">${distInfo}</span>`;
+    }
+  }
+}
+
+function updatePosField(sym, field, value) {
+  const positions = getPositions();
+  if (!positions[sym]) return;
+  positions[sym][field] = value.trim();
+  setPositions(positions);
+  // refresh whichever view is currently visible
+  if (!document.getElementById('viewAnalyze').classList.contains('hidden') && currentSymbol === sym) {
+    run(sym);
+  } else if (!document.getElementById('viewPositions').classList.contains('hidden')) {
+    renderPositions();
+  }
 }
 function openFromPositions(sym) {
   switchTab('analyze');
@@ -685,7 +799,31 @@ async function run(forcedSym) {
             <option value="short" ${posData.side==='short'?'selected':''}>шорт</option>
           </select>` : ''}
         </label>
-      </div>`;
+      </div>
+      ${posData ? `<div class="pos-fields" style="width:100%;margin-top:10px;padding-top:10px;border-top:1px solid #1a2425">
+        <div class="pos-field entry">
+          <label>ВХОД <span style="cursor:pointer;color:#9be8a8;text-decoration:underline" onclick="updatePosField('${sym}','entry','${price}')">⏎ тек.цена</span></label>
+          <input type="text" inputmode="decimal" value="${posData.entry || ''}" placeholder="0.000" onchange="updatePosField('${sym}','entry',this.value)">
+        </div>
+        <div class="pos-field stop">
+          <label>СТОП</label>
+          <input type="text" inputmode="decimal" value="${posData.stop || ''}" placeholder="0.000" onchange="updatePosField('${sym}','stop',this.value)">
+        </div>
+        <div class="pos-field tp1">
+          <label>ТЕЙК 1</label>
+          <input type="text" inputmode="decimal" value="${posData.tp1 || ''}" placeholder="0.000" onchange="updatePosField('${sym}','tp1',this.value)">
+        </div>
+        <div class="pos-field tp2">
+          <label>ТЕЙК 2</label>
+          <input type="text" inputmode="decimal" value="${posData.tp2 || ''}" placeholder="0.000" onchange="updatePosField('${sym}','tp2',this.value)">
+        </div>
+      </div>` : ''}
+      ${posData && posData.entry ? `<div class="pos-pnl" style="width:100%;margin-top:8px">${(() => {
+        const pnl = calcPnlPct(posData.side, posData.entry, price);
+        if (pnl == null) return '';
+        const color = pnl >= 0 ? '#9be8a8' : '#ff9b9b';
+        return `<span style="color:${color}">PnL: ${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}%</span>`;
+      })()}</div>` : ''}`;
 
     // ---- CHECKLIST CARD ----
     let clHtml=`<div class="card" style="border-color:#1e3a2b;background:#0e1a1b">
