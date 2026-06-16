@@ -220,12 +220,41 @@ function switchTab(tab) {
 }
 
 // ===================== QUOTE TOGGLE =====================
-function setQuote(q) {
+async function setQuote(q) {
+  if (q === currentQuote) return;
+  const prevQuote = currentQuote;
+  const hadSymbol = !!currentSymbol;
+  const base = hadSymbol
+    ? (currentSymbol.endsWith(prevQuote) ? currentSymbol.slice(0, -prevQuote.length) : null)
+    : document.getElementById('sym').value.trim().toUpperCase();
+
   currentQuote = q;
   document.getElementById('qUSDT').classList.toggle('active', q === 'USDT');
   document.getElementById('qUSDC').classList.toggle('active', q === 'USDC');
-  document.getElementById('sym').value = '';
   hideSuggest();
+  hidePresetList();
+
+  if (!base) {
+    document.getElementById('sym').value = '';
+    return;
+  }
+
+  // make sure symbol list is loaded so we can verify existence
+  if (!symbolsLoaded) await loadSymbols();
+  const newSym = base + q;
+  const exists = symbolsLoaded && allSymbols.some(s => s.symbol === newSym);
+
+  if (exists) {
+    document.getElementById('sym').value = base;
+    run(newSym);
+  } else {
+    document.getElementById('sym').value = base;
+    document.getElementById('output').style.display = 'none';
+    const errEl = document.getElementById('error');
+    errEl.textContent = `⚠ ${base}${q} не найден на Binance Futures — пары ${base}/${q} не существует`;
+    errEl.style.display = 'block';
+    document.getElementById('empty').style.display = 'none';
+  }
 }
 
 // ===================== LOAD SYMBOLS LIST =====================
@@ -428,7 +457,17 @@ function openFromPositions(sym) {
   document.getElementById('tabPositions').classList.remove('active');
   document.getElementById('viewAnalyze').classList.remove('hidden');
   document.getElementById('viewPositions').classList.add('hidden');
-  document.getElementById('sym').value = sym;
+
+  // detect quote suffix and sync UI so subsequent "АНАЛИЗ" clicks don't duplicate it
+  const quote = sym.endsWith('USDC') ? 'USDC' : 'USDT';
+  if (quote !== currentQuote) {
+    currentQuote = quote;
+    document.getElementById('qUSDT').classList.toggle('active', quote === 'USDT');
+    document.getElementById('qUSDC').classList.toggle('active', quote === 'USDC');
+  }
+  const base = sym.endsWith(quote) ? sym.slice(0, -quote.length) : sym;
+  document.getElementById('sym').value = base;
+  hidePresetList();
   run(sym);
 }
 
@@ -945,8 +984,14 @@ async function copyAllSummary() {
 }
 
 async function run(forcedSym) {
-  let sym = forcedSym || (document.getElementById('sym').value.trim().toUpperCase() + currentQuote);
-  if (forcedSym) sym = forcedSym;
+  let sym;
+  if (forcedSym) {
+    sym = forcedSym;
+  } else {
+    const raw = document.getElementById('sym').value.trim().toUpperCase();
+    // avoid double-appending the quote if the user already typed it (e.g. "HANAUSDT")
+    sym = raw.endsWith(currentQuote) ? raw : raw + currentQuote;
+  }
   if (!sym || sym === currentQuote) return;
 
   hideSuggest();
