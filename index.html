@@ -807,15 +807,166 @@ async function loadPresetList(type, btnEl) {
 }
 async function fetchFunding(sym){const r=await fetch(`https://fapi.binance.com/fapi/v1/premiumIndex?symbol=${sym}`);return r.ok?r.json():null;}
 
+// ===================== ORDER FLOW PROXY DATA (OI, long/short ratio, aggTrade delta) =====================
+// Open Interest history — shows if OI is rising/falling alongside price (real new demand vs squeeze/unwind)
+async function fetchOIHistory(sym, period) {
+  try {
+    const r = await fetch(`https://fapi.binance.com/futures/data/openInterestHist?symbol=${sym}&period=${period}&limit=8`);
+    return r.ok ? r.json() : null;
+  } catch { return null; }
+}
+
+// Top trader long/short account ratio — real positioning skew of larger accounts
+async function fetchLongShortRatio(sym, period) {
+  try {
+    const r = await fetch(`https://fapi.binance.com/futures/data/topLongShortAccountRatio?symbol=${sym}&period=${period}&limit=2`);
+    return r.ok ? r.json() : null;
+  } catch { return null; }
+}
+
+// Aggregate trades — used to approximate taker buy/sell delta (closest proxy to real order-flow without a paid feed)
+async function fetchAggTrades(sym, limit) {
+  try {
+    const r = await fetch(`https://fapi.binance.com/fapi/v1/aggTrades?symbol=${sym}&limit=${limit || 500}`);
+    return r.ok ? r.json() : null;
+  } catch { return null; }
+}
+
+// Compute taker buy/sell volume delta from aggTrades.
+// In Binance aggTrades, "m" = true means the BUYER was the maker (i.e. this was a taker SELL).
+// So m === false => taker bought (aggressive buy); m === true => taker sold (aggressive sell).
+function computeTakerDelta(trades) {
+  if (!trades || !trades.length) return null;
+  let buyVol = 0, sellVol = 0;
+  for (const t of trades) {
+    const qty = parseFloat(t.q) * parseFloat(t.p); // quote volume
+    if (t.m === false) buyVol += qty; else sellVol += qty;
+  }
+  const total = buyVol + sellVol;
+  const buyPct = total > 0 ? (buyVol / total * 100) : 50;
+  return { buyVol, sellVol, buyPct: buyPct.toFixed(0), sellPct: (100 - buyPct).toFixed(0), total };
+}
+
+// Analyze OI history: is OI rising/falling, and is it confirming or diverging from price direction
+function analyzeOI(oiHist, priceChangePct) {
+  if (!oiHist || oiHist.length < 2) return null;
+  const first = parseFloat(oiHist[0].sumOpenInterest);
+  const last = parseFloat(oiHist[oiHist.length - 1].sumOpenInterest);
+  if (!first) return null;
+  const oiChangePct = ((last - first) / first * 100);
+  let signal;
+  const priceUp = priceChangePct > 0.1;
+  const priceDown = priceChangePct < -0.1;
+  const oiUp = oiChangePct > 1;
+  const oiDown = oiChangePct < -1;
+  if (priceUp && oiUp) signal = 'Новый спрос (цена и OI растут вместе)';
+  else if (priceUp && oiDown) signal = '⚠ Шорт-сквиз возможен (цена растёт, OI падает — шорты закрываются, не новые покупки)';
+  else if (priceDown && oiUp) signal = 'Новые шорты набираются (цена падает, OI растёт)';
+  else if (priceDown && oiDown) signal = '⚠ Лонг-сквиз / капитуляция (цена падает, OI падает — лонги закрываются)';
+  else signal = 'Нейтрально, OI стабилен';
+  return { oiChangePct: oiChangePct.toFixed(2), signal, last };
+}
+
+
+
 // ===================== MAIN RUN =====================
 // ===================== CORE ANALYSIS (data only, reusable) =====================
+// ===================== MARKET CONTEXT ANALYSIS (session, regime, volume zones) =====================
+
+// Detect active trading session(s) based on UTC hour
+function detectSession() {
+  const utcHour = new Date().getUTCHours();
+  const sessions = [];
+  // Asia: ~00:00-09:00 UTC (Tokyo/Hong Kong/Singapore core)
+  if (utcHour >= 0 && utcHour < 9) sessions.push('Азия');
+  // Europe: ~07:00-16:00 UTC (London core)
+  if (utcHour >= 7 && utcHour < 16) sessions.push('Европа');
+  // US: ~13:00-22:00 UTC (NY core, regular session ~13:30-20:00)
+  if (utcHour >= 13 && utcHour < 22) sessions.push('США');
+  // Dead zone (low liquidity, after US close before Asia open)
+  if (sessions.length === 0) sessions.push('Мёртвая зона (низкая ликвидность)');
+
+  const overlap = sessions.length > 1;
+  return { sessions, label: sessions.join(' + '), overlap, utcHour };
+}
+
+// Classify market regime: trending vs ranging, using ATR/Bollinger width history
+function detectRegime(candles, boll) {
+  if (!candles || candles.length < 20 || !boll) return { regime: 'неизвестно', confidence: 0 };
+  const closes = candles.map(c => c.close);
+  const recent20 = closes.slice(-20);
+  const first = recent20[0], last = recent20[recent20.length - 1];
+  const netMove = Math.abs((last - first) / first * 100);
+
+  // sum of absolute candle-to-candle moves vs net move = choppiness
+  let totalMove = 0;
+  for (let i = 1; i < recent20.length; i++) {
+    totalMove += Math.abs(recent20[i] - recent20[i - 1]);
+  }
+  const totalMovePct = totalMove / first * 100;
+  const efficiency = totalMovePct > 0 ? netMove / totalMovePct : 0; // 1 = pure trend, ~0 = pure chop
+
+  const bollWidth = boll.width;
+  let regime, warning;
+  if (efficiency > 0.4 && netMove > 3) {
+    regime = 'ТРЕНД';
+    warning = false;
+  } else if (bollWidth < 4) {
+    regime = 'СЖАТИЕ (флэт перед движением)';
+    warning = false;
+  } else {
+    regime = 'ФЛЭТ / ШУМ (казино-режим)';
+    warning = true;
+  }
+  return { regime, efficiency: (efficiency * 100).toFixed(0), warning, netMove: netMove.toFixed(1) };
+}
+
+// Approximate "volume zones of interest" — candles with highest volume relative to range,
+// acting as a rough proxy for institutional interest areas (not true order-flow/footprint data)
+function getVolumeZones(candles, currentPrice) {
+  if (!candles || candles.length < 10) return [];
+  const withScore = candles.map(c => ({
+    price: (c.high + c.low) / 2,
+    high: c.high, low: c.low,
+    vol: c.qvol,
+    isBull: c.close >= c.open,
+  }));
+  // take top 20% by volume
+  const sorted = [...withScore].sort((a, b) => b.vol - a.vol);
+  const topCount = Math.max(2, Math.floor(sorted.length * 0.2));
+  const topVolCandles = sorted.slice(0, topCount);
+
+  // cluster nearby zones (within 1% of each other)
+  const zones = [];
+  for (const c of topVolCandles) {
+    const existing = zones.find(z => Math.abs(z.price - c.price) / c.price < 0.01);
+    if (existing) {
+      existing.totalVol += c.vol;
+      existing.count += 1;
+      existing.bullCount += c.isBull ? 1 : 0;
+    } else {
+      zones.push({ price: c.price, totalVol: c.vol, count: 1, bullCount: c.isBull ? 1 : 0 });
+    }
+  }
+  zones.sort((a, b) => b.totalVol - a.totalVol);
+  return zones.slice(0, 3).map(z => ({
+    price: z.price,
+    distPct: distPct(z.price, currentPrice),
+    totalVol: z.totalVol,
+    bias: z.bullCount / z.count > 0.6 ? 'покупки' : z.bullCount / z.count < 0.4 ? 'продажи' : 'смешанная',
+  }));
+}
+
 async function fetchAnalysis(sym, N) {
   N = N || 20;
   const LIMIT = Math.max(250, N + 150);
-  const [kl15, kl1h, kl4h, kl1d, ticker, funding] = await Promise.all([
+  const [kl15, kl1h, kl4h, kl1d, ticker, funding, oiHist, lsRatio, aggTrades] = await Promise.all([
     fetchKlines(sym, '15m', LIMIT), fetchKlines(sym, '1h', LIMIT),
     fetchKlines(sym, '4h', LIMIT), fetchKlines(sym, '1d', LIMIT),
     fetchTicker(sym).catch(() => null), fetchFunding(sym).catch(() => null),
+    fetchOIHistory(sym, '1h').catch(() => null),
+    fetchLongShortRatio(sym, '1h').catch(() => null),
+    fetchAggTrades(sym, 500).catch(() => null),
   ]);
   const klines = { '15m': kl15, '1h': kl1h, '4h': kl4h, '1d': kl1d };
 
@@ -836,13 +987,15 @@ async function fetchAnalysis(sym, N) {
     const macdVal = calcMACD(closes);
     const r6 = rsi(closes, 6);
     const ma7 = sma(closes, 7), ma25 = sma(closes, 25), ma99 = sma(closes, 99);
+    const regime = detectRegime(candles, boll);
+    const volZones = getVolumeZones(candles.slice(-50), last.close);
     tfData[tf.key] = {
       label: tf.label, price: last.close,
       ma7, ma25, ma99,
       r6, r12: rsi(closes, 12), r24: rsi(closes, 24),
       macd: macdVal,
       atr, atrPct: atr ? atr / last.close * 100 : null,
-      boll, div, levels,
+      boll, div, levels, regime, volZones,
       hi50: Math.max(...candles.slice(-50).map(c => c.high)),
       lo50: Math.min(...candles.slice(-50).map(c => c.low)),
       vol: last.qvol, avgVol, volRatio: last.qvol / avgVol,
@@ -853,11 +1006,23 @@ async function fetchAnalysis(sym, N) {
     };
   }
 
+  const session = detectSession();
+
   const price = tfData['15m'].price;
   const change24 = ticker ? parseFloat(ticker.priceChangePercent) : null;
   const vol24 = ticker ? parseFloat(ticker.quoteVolume) : null;
   const fundingRate = funding ? parseFloat(funding.lastFundingRate) * 100 : null;
   const markPrice = funding ? parseFloat(funding.markPrice) : null;
+
+  // ---- ORDER FLOW PROXY (OI trend, long/short ratio, taker delta) ----
+  const oiAnalysis = (oiHist && oiHist.length >= 2) ? analyzeOI(oiHist, change24 || 0) : null;
+  const lsLatest = (lsRatio && lsRatio.length) ? lsRatio[lsRatio.length - 1] : null;
+  const lsData = lsLatest ? {
+    longPct: (parseFloat(lsLatest.longAccount) * 100).toFixed(0),
+    shortPct: (parseFloat(lsLatest.shortAccount) * 100).toFixed(0),
+    ratio: parseFloat(lsLatest.longShortRatio).toFixed(2),
+  } : null;
+  const takerDelta = aggTrades ? computeTakerDelta(aggTrades) : null;
 
   // ---- CHECKLIST ----
   const d1 = tfData['1d'], d4 = tfData['4h'], d1h = tfData['1h'], d15 = tfData['15m'];
@@ -869,7 +1034,8 @@ async function fetchAnalysis(sym, N) {
   const rsiOk = d1h.r6 > 20 && d1h.r6 < 80;
   checks.push({ ok: rsiOk, label: `RSI(6) 1H: ${fn(d1h.r6)} — ${rsiOk ? 'допустимый' : 'ЭКСТРИМ ⚠'}` });
   const volOk = d15.volRatio > 0.8;
-  checks.push({ ok: volOk, label: `Объём 15M: ${fn(d15.volRatio, 2)}x avg — ${volOk ? 'норма' : 'низкий'}` });
+  const volCritical = d15.volRatio < 0.4;
+  checks.push({ ok: volOk, label: `Объём 15M: ${fn(d15.volRatio, 2)}x avg — ${volCritical ? 'КРИТИЧЕСКИ низкий ⚠' : volOk ? 'норма' : 'низкий'}` });
   const macdOk = d1h.macd && d1h.macd.hist !== null && d1h.macd.dif !== null;
   const macdDir = macdOk ? (d1h.macd.hist > 0 ? 'положительный' : 'отрицательный') : 'нет данных';
   checks.push({ ok: macdOk && d1h.macd.hist !== null, label: `MACD 1H: ${macdDir}`, neutral: !macdOk });
@@ -879,11 +1045,17 @@ async function fetchAnalysis(sym, N) {
   checks.push({ ok: bollOk, label: `Bollinger 1H: ${bollOk ? 'внутри полос' : 'за полосой ⚠'}` });
   const fundOk = fundingRate == null || Math.abs(fundingRate) < 0.1;
   checks.push({ ok: fundOk, label: `Funding: ${fundingRate != null ? ((fundingRate >= 0 ? '+' : '') + fundingRate.toFixed(4) + '%') : '—'} ${fundOk ? 'норма' : 'ЭКСТРИМ ⚠'}` });
+  const regimeOk = !d1h.regime.warning;
+  checks.push({ ok: regimeOk, label: `Режим 1H: ${d1h.regime.regime}`, neutral: d1h.regime.regime.includes('СЖАТИЕ') });
+  if (oiAnalysis) {
+    const oiOk = !oiAnalysis.signal.includes('⚠');
+    checks.push({ ok: oiOk, label: `Open Interest: ${oiAnalysis.oiChangePct >= 0 ? '+' : ''}${oiAnalysis.oiChangePct}% — ${oiAnalysis.signal}`, neutral: !oiOk && false });
+  }
 
   const score = checks.filter(c => c.ok).length;
-  const scoreLabel = score >= 7 ? 'СЕТАП СИЛЬНЫЙ — можно рассматривать вход' : score >= 5 ? 'СЕТАП СРЕДНИЙ — осторожно, уменьши размер' : 'СЕТАП СЛАБЫЙ — лучше пропустить';
+  const scoreLabel = score >= Math.ceil(checks.length * 0.85) ? 'СЕТАП СИЛЬНЫЙ — можно рассматривать вход' : score >= Math.ceil(checks.length * 0.65) ? 'СЕТАП СРЕДНИЙ — осторожно, уменьши размер' : 'СЕТАП СЛАБЫЙ — лучше пропустить';
 
-  return { sym, price, change24, vol24, fundingRate, markPrice, tfData, checks, score, scoreLabel, N };
+  return { sym, price, change24, vol24, fundingRate, markPrice, tfData, checks, score, scoreLabel, N, session, oiAnalysis, lsData, takerDelta };
 }
 
 function buildTextSummary(a) {
@@ -891,9 +1063,13 @@ function buildTextSummary(a) {
   const chS = a.change24 == null ? '' : a.change24 >= 0 ? '+' : '';
   const tl = [
     `${a.sym} — ${fp(a.price)} USDT`, `${now.toLocaleString('ru')}`,
+    a.session ? `Сессия: ${a.session.label}` : '',
     a.change24 != null ? `Изменение 24h: ${chS}${fn(a.change24)}%` : '',
     a.vol24 != null ? `Объём 24h: ${fvol(a.vol24)} USDT` : '',
     a.fundingRate != null ? `Funding: ${a.fundingRate >= 0 ? '+' : ''}${a.fundingRate.toFixed(4)}%` : '',
+    a.oiAnalysis ? `Open Interest: ${a.oiAnalysis.oiChangePct >= 0 ? '+' : ''}${a.oiAnalysis.oiChangePct}% — ${a.oiAnalysis.signal}` : '',
+    a.lsData ? `Long/Short трейдеров: ${a.lsData.longPct}%/${a.lsData.shortPct}% (ratio ${a.lsData.ratio})` : '',
+    a.takerDelta ? `Тейкер дельта: ${a.takerDelta.buyPct}% покупка / ${a.takerDelta.sellPct}% продажа` : '',
     ``, `ЧЕКЛИСТ: ${a.score}/${a.checks.length} — ${a.scoreLabel}`,
     ...a.checks.map(c => `${c.ok ? '✓' : '✗'} ${c.label}`), ``
   ];
@@ -912,6 +1088,10 @@ function buildTextSummary(a) {
     tl.push(`Boll: верх ${fp(t.boll?.upper)} · mid ${fp(t.boll?.mid)} · низ ${fp(t.boll?.lower)} | Ширина: ${fn(bollW)}% ${bollState}`);
     tl.push(`Дивергенция: ${t.div.bearDiv ? '⚠ МЕДВЕЖЬЯ' : t.div.bullDiv ? '↑ БЫЧЬЯ' : 'нет'}`);
     tl.push(`Объём: ${fvol(t.vol)} (ratio:${fn(t.volRatio, 2)}x${vrT}) | покуп:${volBP}% прод:${100 - parseInt(volBP)}%`);
+    tl.push(`Режим: ${t.regime.regime} (эффективность ${t.regime.efficiency}%)`);
+    if (t.volZones && t.volZones.length) {
+      tl.push(`Зоны объёма: ` + t.volZones.map(z => `${fp(z.price)}(${z.bias},${fn(z.distPct)}%)`).join(' · '));
+    }
     tl.push(`MA7: ${fp(t.ma7)} (${dir(t.price, t.ma7)} ${fpct(t.distMA7)}) MA25: ${fp(t.ma25)} (${dir(t.price, t.ma25)} ${fpct(t.distMA25)}) MA99: ${fp(t.ma99)} (${dir(t.price, t.ma99)} ${fpct(t.distMA99)})`);
     tl.push(`RSI(6): ${fn(t.r6)}${rsiTag(t.r6)}  RSI(12): ${fn(t.r12)}  RSI(24): ${fn(t.r24)}`);
     if (t.macd) tl.push(`DIF: ${fn(t.macd.dif, 6)} DEA: ${fn(t.macd.dea, 6)} MACD: ${fn(t.macd.hist, 6)}`);
@@ -1014,7 +1194,8 @@ async function run(forcedSym) {
     currentSymbol = sym;
     addRecent(sym);
 
-    const scoreColor=score>=7?'#9be8a8':score>=5?'#ffb86b':'#ff9b9b';
+    const scoreColor=score>=8?'#9be8a8':score>=6?'#ffb86b':'#ff9b9b';
+    const session = a.session;
 
     // ---- TICKER BAR ----
     const tb=document.getElementById('tickerBar');
@@ -1028,6 +1209,7 @@ async function run(forcedSym) {
     }
     const positions = getPositions();
     const posData = positions[sym];
+    const sessionColor = session.overlap ? '#9be8a8' : session.sessions[0].includes('Мёртвая') ? '#ff9b9b' : '#ffb86b';
     tb.innerHTML=`
       <div style="width:100%;display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
         <div>
@@ -1035,6 +1217,7 @@ async function run(forcedSym) {
           <span class="ticker-price ${chC}" style="margin-left:12px">${fp(price)}</span>
           <span class="${chC}" style="margin-left:8px;font-size:13px">${chS}${fn(change24)}%</span>
         </div>
+        <span style="font-size:10px;color:${sessionColor};border:1px solid ${sessionColor};border-radius:3px;padding:3px 8px;white-space:nowrap">🌍 ${session.label}</span>
       </div>
       <div style="width:100%;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
         <div class="ticker-stats">
@@ -1075,6 +1258,27 @@ async function run(forcedSym) {
         return `<span style="color:${color}">PnL: ${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}%</span>`;
       })()}</div>` : ''}`;
 
+    // ---- ORDER FLOW PROXY CARD ----
+    let ofHtml = '';
+    if (a.oiAnalysis || a.lsData || a.takerDelta) {
+      ofHtml = `<div class="card" style="border-color:#2a2440;background:#150f24">
+        <div style="font-size:11px;font-weight:700;letter-spacing:.1em;color:#c8a8e8;margin-bottom:10px">ORDER FLOW PROXY (приближение, не точный order flow)</div>`;
+      if (a.oiAnalysis) {
+        const oiC = a.oiAnalysis.signal.includes('⚠') ? '#ff9b9b' : '#9be8a8';
+        ofHtml += `<div style="margin-bottom:8px;font-size:12px"><span class="muted">Open Interest: </span><span style="color:${oiC}">${a.oiAnalysis.oiChangePct >= 0 ? '+' : ''}${a.oiAnalysis.oiChangePct}%</span><br><span style="color:${oiC};font-size:11px">${a.oiAnalysis.signal}</span></div>`;
+      }
+      if (a.lsData) {
+        ofHtml += `<div style="margin-bottom:8px;font-size:12px"><span class="muted">Long/Short трейдеров: </span><span class="up">${a.lsData.longPct}% лонг</span> / <span class="dn">${a.lsData.shortPct}% шорт</span> <span class="muted">(ratio ${a.lsData.ratio})</span></div>`;
+      }
+      if (a.takerDelta) {
+        const buyDom = parseFloat(a.takerDelta.buyPct) > 55;
+        const sellDom = parseFloat(a.takerDelta.sellPct) > 55;
+        const deltaC = buyDom ? '#9be8a8' : sellDom ? '#ff9b9b' : '#5a6a6b';
+        ofHtml += `<div style="font-size:12px"><span class="muted">Тейкер дельта (~500 сделок): </span><span style="color:${deltaC}">${a.takerDelta.buyPct}% покупка / ${a.takerDelta.sellPct}% продажа</span></div>`;
+      }
+      ofHtml += `</div>`;
+    }
+
     // ---- CHECKLIST CARD ----
     let clHtml=`<div class="card" style="border-color:#1e3a2b;background:#0e1a1b">
       <div style="font-size:11px;font-weight:700;letter-spacing:.1em;color:#9be8a8;margin-bottom:10px">ЧЕКЛИСТ ВХОДА</div>`;
@@ -1085,15 +1289,21 @@ async function run(forcedSym) {
     }
     clHtml+=`<div style="height:6px;background:#1e2a2b;border-radius:3px;margin-top:10px;overflow:hidden"><div style="height:100%;border-radius:3px;width:${score/checks.length*100}%;background:${scoreColor}"></div></div>`;
     clHtml+=`<div style="font-size:11px;margin-top:6px;font-weight:700;color:${scoreColor}">${score}/${checks.length} — ${scoreLabel}</div></div>`;
+    clHtml = ofHtml + clHtml;
+
 
     // ---- CARDS ----
     const cards=document.getElementById('cards');
     cards.innerHTML=clHtml;
     const tl=[
       `${sym} — ${fp(price)} USDT`,`${now.toLocaleString('ru')}`,
+      `Сессия: ${session.label}`,
       change24!=null?`Изменение 24h: ${chS}${fn(change24)}%`:'',
       vol24!=null?`Объём 24h: ${fvol(vol24)} USDT`:'',
       fundingRate!=null?`Funding: ${fundingRate>=0?'+':''}${fundingRate.toFixed(4)}%`:'',
+      a.oiAnalysis?`Open Interest: ${a.oiAnalysis.oiChangePct>=0?'+':''}${a.oiAnalysis.oiChangePct}% — ${a.oiAnalysis.signal}`:'',
+      a.lsData?`Long/Short трейдеров: ${a.lsData.longPct}%/${a.lsData.shortPct}% (ratio ${a.lsData.ratio})`:'',
+      a.takerDelta?`Тейкер дельта: ${a.takerDelta.buyPct}% покупка / ${a.takerDelta.sellPct}% продажа`:'',
       ``,`ЧЕКЛИСТ: ${score}/${checks.length} — ${scoreLabel}`,
       ...checks.map(c=>`${c.ok?'✓':'✗'} ${c.label}`),``
     ];
@@ -1153,6 +1363,23 @@ async function run(forcedSym) {
       </div>
       <div class="line"><span class="up">покуп ${volBP}%</span> · <span class="dn">прод ${100-parseInt(volBP)}%</span> <span class="muted">(за ${s.n} св)</span></div>`;
 
+      html+=`<div class="section-label">РЕЖИМ РЫНКА</div>
+      <div class="line">
+        <span class="${t.regime.warning?'warn':'up'}">${t.regime.regime}</span>
+        <span class="muted">  эффективность движения: ${t.regime.efficiency}%</span>
+      </div>
+      ${t.regime.warning?'<div class="line muted" style="font-size:11px">⚠ Низкая эффективность — цена много "шумит" без чистого направления, паттерны менее надёжны, выше риск шейкаута стопов</div>':''}`;
+
+      if(t.volZones && t.volZones.length){
+        html+=`<div class="section-label">ЗОНЫ ОБЪЁМНОГО ИНТЕРЕСА</div>`;
+        html+='<div>';
+        for(const z of t.volZones){
+          const zColor=z.bias==='покупки'?'up':z.bias==='продажи'?'dn':'muted';
+          html+=`<div style="display:flex;justify-content:space-between;padding:2px 0;font-size:11px"><span>${fp(z.price)}</span><span class="${zColor}">${z.bias}</span><span class="muted">${fvol(z.totalVol)} · ${fn(z.distPct)}%</span></div>`;
+        }
+        html+='</div>';
+      }
+
       html+=`<div class="section-label">СКОЛЬЗЯЩИЕ + РАССТОЯНИЕ</div>
       <div class="line">
         <span class="muted">MA7 </span>${fp(t.ma7)} <span class="${dirC(t.price,t.ma7)}">${dir(t.price,t.ma7)}</span> <span class="muted">${fpct(t.distMA7)}</span>
@@ -1194,6 +1421,10 @@ async function run(forcedSym) {
       tl.push(`Boll: верх ${fp(t.boll?.upper)} · mid ${fp(t.boll?.mid)} · низ ${fp(t.boll?.lower)} | Ширина: ${fn(bollW)}% ${bollState}`);
       tl.push(`Дивергенция: ${t.div.bearDiv?'⚠ МЕДВЕЖЬЯ':t.div.bullDiv?'↑ БЫЧЬЯ':'нет'}`);
       tl.push(`Объём: ${fvol(t.vol)} (ratio:${fn(t.volRatio,2)}x${vrT}) | покуп:${volBP}% прод:${100-parseInt(volBP)}%`);
+      tl.push(`Режим: ${t.regime.regime} (эффективность ${t.regime.efficiency}%)`);
+      if(t.volZones && t.volZones.length){
+        tl.push(`Зоны объёма: `+t.volZones.map(z=>`${fp(z.price)}(${z.bias},${fn(z.distPct)}%)`).join(' · '));
+      }
       tl.push(`MA7: ${fp(t.ma7)} (${dir(t.price,t.ma7)} ${fpct(t.distMA7)}) MA25: ${fp(t.ma25)} (${dir(t.price,t.ma25)} ${fpct(t.distMA25)}) MA99: ${fp(t.ma99)} (${dir(t.price,t.ma99)} ${fpct(t.distMA99)})`);
       tl.push(`RSI(6): ${fn(t.r6)}${rsiTag(t.r6)}  RSI(12): ${fn(t.r12)}  RSI(24): ${fn(t.r24)}`);
       if(t.macd)tl.push(`DIF: ${fn(t.macd.dif,6)} DEA: ${fn(t.macd.dea,6)} MACD: ${fn(t.macd.hist,6)}`);
