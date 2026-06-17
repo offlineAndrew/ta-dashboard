@@ -21,6 +21,10 @@ body{background:#0b0e0f;color:#d8e0e0;font-family:'JetBrains Mono','SF Mono',Con
 /* Search */
 .search-wrap{position:relative;margin-bottom:14px;}
 .input-row{display:flex;gap:8px;}
+.sym-input-wrap{position:relative;flex:1;display:flex;}
+.sym-input-wrap input[type=text]{padding-right:32px;}
+.sym-clear-btn{position:absolute;right:8px;top:50%;transform:translateY(-50%);background:transparent;border:none;color:#5a6a6b;cursor:pointer;font-size:14px;padding:4px 6px;line-height:1;}
+.sym-clear-btn:hover{color:#ff9b9b;}
 input[type=text]{flex:1;background:#111718;border:1px solid #1e2a2b;border-radius:4px;color:#d8e0e0;padding:10px 12px;font-size:14px;font-family:inherit;outline:none;text-transform:uppercase;}
 input[type=text]::placeholder{color:#2e4a4c;text-transform:none;}
 input[type=text]:focus{border-color:#2e4a4c;}
@@ -43,7 +47,7 @@ button.go:disabled{background:#1a2223;color:#3d5052;cursor:default;}
 .preset-btn{flex:1;background:#111718;border:1px solid #1e2a2b;border-radius:4px;color:#aab4b4;padding:9px 8px;font-size:12px;cursor:pointer;font-family:inherit;letter-spacing:.02em;}
 .preset-btn:hover{border-color:#2e4a4c;color:#d8e0e0;}
 .preset-btn.active{border-color:#9be8a8;color:#9be8a8;background:#0e1a1b;}
-.preset-list{margin-bottom:14px;}
+.preset-list{margin-bottom:14px;max-height:480px;overflow-y:auto;}
 .preset-item{display:flex;justify-content:space-between;align-items:center;background:#111718;border:1px solid #1e2a2b;border-radius:6px;padding:10px 14px;margin-bottom:6px;cursor:pointer;}
 .preset-item:hover{border-color:#2e4a4c;}
 .preset-item-sym{font-size:13px;font-weight:700;color:#fff;}
@@ -131,7 +135,10 @@ button.go:disabled{background:#1a2223;color:#3d5052;cursor:default;}
   <div id="viewAnalyze">
     <div class="search-wrap">
       <div class="input-row">
-        <input type="text" id="sym" placeholder="Поиск тикера..." autocomplete="off" />
+        <div class="sym-input-wrap">
+          <input type="text" id="sym" placeholder="Поиск тикера..." autocomplete="off" />
+          <button id="symClearBtn" class="sym-clear-btn" onclick="clearSymbolInput()" style="display:none">✕</button>
+        </div>
         <div class="quote-toggle">
           <button class="quote-btn active" id="qUSDT" onclick="setQuote('USDT')">USDT</button>
           <button class="quote-btn" id="qUSDC" onclick="setQuote('USDC')">USDC</button>
@@ -160,7 +167,10 @@ button.go:disabled{background:#1a2223;color:#3d5052;cursor:default;}
 
     <div id="output">
       <div class="result-head">
-        <span style="font-size:11px;color:#3a4e50" id="rTs"></span>
+        <div style="display:flex;align-items:center;gap:8px">
+          <span style="font-size:11px;color:#3a4e50" id="rTs"></span>
+          <button class="copy-btn" id="backToListBtn" onclick="backToPresetList()" style="display:none">← К списку</button>
+        </div>
         <button class="copy-btn" id="copyBtn" onclick="copyText()">КОПИРОВАТЬ СВОДКУ</button>
       </div>
       <div id="tickerBar" class="ticker-bar"></div>
@@ -236,6 +246,7 @@ async function setQuote(q) {
 
   if (!base) {
     document.getElementById('sym').value = '';
+    document.getElementById('symClearBtn').style.display = 'none';
     return;
   }
 
@@ -467,6 +478,7 @@ function openFromPositions(sym) {
   }
   const base = sym.endsWith(quote) ? sym.slice(0, -quote.length) : sym;
   document.getElementById('sym').value = base;
+  document.getElementById('symClearBtn').style.display = 'block';
   hidePresetList();
   run(sym);
 }
@@ -482,8 +494,18 @@ document.addEventListener('click', (e) => {
 function onSearchInput() {
   hidePresetList();
   const q = document.getElementById('sym').value.trim().toUpperCase();
+  document.getElementById('symClearBtn').style.display = q ? 'block' : 'none';
   if (!symbolsLoaded) { loadSymbols().then(() => filterAndShow(q)); return; }
   filterAndShow(q);
+}
+
+function clearSymbolInput() {
+  const input = document.getElementById('sym');
+  input.value = '';
+  document.getElementById('symClearBtn').style.display = 'none';
+  hideSuggest();
+  hidePresetList();
+  input.focus();
 }
 
 function filterAndShow(q) {
@@ -539,17 +561,59 @@ function onSearchKeydown(e) {
     hideSuggest();
   }
 }
+let lastPresetType = null;
+let lastPresetHtml = null;
+
 function selectSymbol(sym) {
   document.getElementById('sym').value = sym.replace(currentQuote, '');
+  document.getElementById('symClearBtn').style.display = 'block';
   hideSuggest();
   hidePresetList();
   run(sym);
 }
-function hidePresetList() {
+
+// Used when clicking a coin from a top-list (gainers/losers/volume) — keeps the list
+// cached so the user can return to it via the "back to list" button instead of losing their place.
+function selectSymbolFromPreset(sym) {
+  lastPresetType = activePreset;
+  lastPresetHtml = document.getElementById('presetList').innerHTML;
+  document.getElementById('sym').value = sym.replace(currentQuote, '');
+  document.getElementById('symClearBtn').style.display = 'block';
+  hideSuggest();
+  // Don't call hidePresetList() here — we keep lastPresetHtml/lastPresetType around for "back".
+  // Just visually hide the list and unmark the active preset button without erasing the cached HTML.
   activePreset = null;
   document.querySelectorAll('.preset-btn').forEach(b => b.classList.remove('active'));
   document.getElementById('presetList').classList.add('hidden');
+  document.getElementById('backToListBtn').style.display = 'inline-block';
+  run(sym);
+}
+
+function backToPresetList() {
+  if (!lastPresetHtml || !lastPresetType) return;
+  document.getElementById('output').style.display = 'none';
+  document.getElementById('empty').style.display = 'none';
+  document.getElementById('error').style.display = 'none';
+  document.getElementById('backToListBtn').style.display = 'none';
+  const listEl = document.getElementById('presetList');
+  listEl.innerHTML = lastPresetHtml;
+  listEl.classList.remove('hidden');
+  activePreset = lastPresetType;
+  document.querySelectorAll('.preset-btn').forEach(b => {
+    b.classList.toggle('active', b.textContent.trim().toLowerCase().includes(
+      lastPresetType === 'gainers' ? 'роста' : lastPresetType === 'losers' ? 'падения' : 'объёма'
+    ));
+  });
+}
+
+function hidePresetList() {
+  activePreset = null;
+  lastPresetType = null;
+  lastPresetHtml = null;
+  document.querySelectorAll('.preset-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('presetList').classList.add('hidden');
   document.getElementById('presetList').innerHTML = '';
+  document.getElementById('backToListBtn').style.display = 'none';
 }
 
 // ===================== INDICATOR MATH =====================
@@ -581,7 +645,13 @@ function calcATR(candles,p=14){
     const c=candles[i],prev=candles[i-1];
     trs.push(Math.max(c.high-c.low,Math.abs(c.high-prev.close),Math.abs(c.low-prev.close)));
   }
-  return trs.slice(-p).reduce((a,b)=>a+b,0)/p;
+  const recentTrs = trs.slice(-p);
+  // Guard against a single anomalous candle (e.g. a data glitch or rebase tick) dominating ATR:
+  // if one TR value is more than 5x the median of the rest, treat it as an outlier and use the median instead.
+  const sorted = [...recentTrs].sort((a,b)=>a-b);
+  const median = sorted[Math.floor(sorted.length/2)];
+  const cleaned = recentTrs.map(v => (median > 0 && v > median * 5) ? median : v);
+  return cleaned.reduce((a,b)=>a+b,0)/p;
 }
 function calcBollinger(closes,p=20,mult=2){
   if(closes.length<p)return null;
@@ -779,13 +849,13 @@ async function loadPresetList(type, btnEl) {
 
     let sorted, labelFn;
     if (type === 'gainers') {
-      sorted = data.sort((a, b) => parseFloat(b.priceChangePercent) - parseFloat(a.priceChangePercent)).slice(0, 20);
+      sorted = data.sort((a, b) => parseFloat(b.priceChangePercent) - parseFloat(a.priceChangePercent)).slice(0, 50);
       labelFn = t => `<span class="up">+${parseFloat(t.priceChangePercent).toFixed(2)}%</span>`;
     } else if (type === 'losers') {
-      sorted = data.sort((a, b) => parseFloat(a.priceChangePercent) - parseFloat(b.priceChangePercent)).slice(0, 20);
+      sorted = data.sort((a, b) => parseFloat(a.priceChangePercent) - parseFloat(b.priceChangePercent)).slice(0, 50);
       labelFn = t => `<span class="dn">${parseFloat(t.priceChangePercent).toFixed(2)}%</span>`;
     } else {
-      sorted = data.sort((a, b) => parseFloat(b.quoteVolume) - parseFloat(a.quoteVolume)).slice(0, 20);
+      sorted = data.sort((a, b) => parseFloat(b.quoteVolume) - parseFloat(a.quoteVolume)).slice(0, 50);
       labelFn = t => `<span class="muted">${fvol(parseFloat(t.quoteVolume))}</span>`;
     }
 
@@ -793,9 +863,11 @@ async function loadPresetList(type, btnEl) {
       const base = t.symbol.replace(currentQuote, '');
       const ch = parseFloat(t.priceChangePercent);
       const chC = ch >= 0 ? 'up' : 'dn';
-      return `<div class="preset-item" onclick="selectSymbol('${t.symbol}')">
+      const lastPrice = parseFloat(t.lastPrice);
+      return `<div class="preset-item" onclick="selectSymbolFromPreset('${t.symbol}')">
         <span class="preset-item-sym">${base}</span>
         <div class="preset-item-stats">
+          <span class="muted">${fp(lastPrice)}</span>
           <span class="${chC}">${ch >= 0 ? '+' : ''}${ch.toFixed(2)}%</span>
           <span class="muted">${fvol(parseFloat(t.quoteVolume))}</span>
         </div>
@@ -925,7 +997,17 @@ function detectRegime(candles, boll) {
 // acting as a rough proxy for institutional interest areas (not true order-flow/footprint data)
 function getVolumeZones(candles, currentPrice) {
   if (!candles || candles.length < 10) return [];
-  const withScore = candles.map(c => ({
+  // Filter out historical outlier candles whose price is wildly different from the current price
+  // (e.g. pre-rebase/relisting ticks far outside any realistic trading range). Without this,
+  // a single old anomalous candle can produce a "volume zone" thousands of percent away from price,
+  // which is meaningless noise rather than a real area of interest.
+  const filtered = candles.filter(c => {
+    const mid = (c.high + c.low) / 2;
+    const distPctAbs = Math.abs((mid - currentPrice) / currentPrice * 100);
+    return distPctAbs < 60; // more than 60% away from current price is treated as a data anomaly, not a real zone
+  });
+  if (filtered.length < 5) return []; // not enough clean data to form meaningful zones
+  const withScore = filtered.map(c => ({
     price: (c.high + c.low) / 2,
     high: c.high, low: c.low,
     vol: c.qvol,
@@ -1024,6 +1106,15 @@ async function fetchAnalysis(sym, N) {
   } : null;
   const takerDelta = aggTrades ? computeTakerDelta(aggTrades) : null;
 
+  // ---- MULTI-TIMEFRAME RSI EXTREME CHECK ----
+  // Objective count of how many timeframes show RSI(6) at a statistical extreme (>=95 or <=5).
+  // This is presented as raw data, not a buy/sell verdict — the conflict with trend/OI signals
+  // (if any) is for the reader to weigh, since no fixed threshold here is empirically validated.
+  const rsiExtremeTFs = TFS.map(tf => ({ tf: tf.label, r6: tfData[tf.key].r6 }))
+    .filter(x => x.r6 != null && (x.r6 >= 95 || x.r6 <= 5));
+  const rsiExtremeCount = rsiExtremeTFs.length;
+  const rsiExtremeDirection = rsiExtremeCount > 0 ? (rsiExtremeTFs[0].r6 >= 95 ? 'верх' : 'низ') : null;
+
   // ---- CHECKLIST ----
   const d1 = tfData['1d'], d4 = tfData['4h'], d1h = tfData['1h'], d15 = tfData['15m'];
   const checks = [];
@@ -1059,11 +1150,31 @@ async function fetchAnalysis(sym, N) {
     const oiOk = !oiAnalysis.signal.includes('⚠');
     checks.push({ ok: oiOk, label: `Open Interest: ${oiAnalysis.oiChangePct >= 0 ? '+' : ''}${oiAnalysis.oiChangePct}% — ${oiAnalysis.signal}`, neutral: !oiOk && false });
   }
+  if (rsiExtremeCount >= 2) {
+    checks.push({
+      ok: false,
+      label: `RSI экстрим (≥95 или ≤5) на ${rsiExtremeCount} ТФ одновременно (${rsiExtremeTFs.map(x => x.tf).join(', ')}) — конфликтующий сигнал с трендом/order flow, нет единого верного ответа`,
+      neutral: false,
+    });
+  }
+
+  // Detect explicit conflict between trend/OI direction and multi-TF RSI extreme — surfaced as data, not a verdict
+  let signalConflict = null;
+  if (rsiExtremeCount >= 2) {
+    const trendDir = trend4h !== 'нейтральный' ? trend4h : trend1d;
+    const rsiSaysCorrection = rsiExtremeDirection === 'верх' && trendDir === 'бычий' || rsiExtremeDirection === 'низ' && trendDir === 'медвежий';
+    if (rsiSaysCorrection) {
+      signalConflict = {
+        rsiTFs: rsiExtremeCount, trendDir,
+        note: `RSI экстрим на ${rsiExtremeCount} ТФ предполагает возможную краткосрочную коррекцию против тренда (${trendDir}). Тренд/OI и RSI-тайминг здесь дают разные ответы — нет проверенного правила какой важнее, оцени оба варианта.`,
+      };
+    }
+  }
 
   const score = checks.filter(c => c.ok).length;
   const scoreLabel = score >= Math.ceil(checks.length * 0.85) ? 'СЕТАП СИЛЬНЫЙ — можно рассматривать вход' : score >= Math.ceil(checks.length * 0.65) ? 'СЕТАП СРЕДНИЙ — осторожно, уменьши размер' : 'СЕТАП СЛАБЫЙ — лучше пропустить';
 
-  return { sym, price, change24, vol24, fundingRate, markPrice, tfData, checks, score, scoreLabel, N, session, oiAnalysis, lsData, takerDelta };
+  return { sym, price, change24, vol24, fundingRate, markPrice, tfData, checks, score, scoreLabel, N, session, oiAnalysis, lsData, takerDelta, signalConflict };
 }
 
 function buildTextSummary(a) {
@@ -1078,6 +1189,7 @@ function buildTextSummary(a) {
     a.oiAnalysis ? `Open Interest: ${a.oiAnalysis.oiChangePct >= 0 ? '+' : ''}${a.oiAnalysis.oiChangePct}% — ${a.oiAnalysis.signal}` : '',
     a.lsData ? `Long/Short трейдеров: ${a.lsData.longPct}%/${a.lsData.shortPct}% (ratio ${a.lsData.ratio})` : '',
     a.takerDelta ? `Тейкер дельта: ${a.takerDelta.buyPct}% покупка / ${a.takerDelta.sellPct}% продажа` : '',
+    a.signalConflict ? `⚠ КОНФЛИКТ СИГНАЛОВ: ${a.signalConflict.note}` : '',
     ``, `ЧЕКЛИСТ: ${a.score}/${a.checks.length} — ${a.scoreLabel}`,
     ...a.checks.map(c => `${c.ok ? '✓' : '✗'} ${c.label}`), ``
   ];
@@ -1266,6 +1378,15 @@ async function run(forcedSym) {
         return `<span style="color:${color}">PnL: ${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}%</span>`;
       })()}</div>` : ''}`;
 
+    // ---- SIGNAL CONFLICT WARNING CARD ----
+    let conflictHtml = '';
+    if (a.signalConflict) {
+      conflictHtml = `<div class="card" style="border-color:#4a3a1e;background:#241c0e">
+        <div style="font-size:11px;font-weight:700;letter-spacing:.1em;color:#ffb86b;margin-bottom:8px">⚠ КОНФЛИКТ СИГНАЛОВ — НЕТ ЕДИНОГО ОТВЕТА</div>
+        <div style="font-size:12px;color:#e8d8b8;line-height:1.5">${a.signalConflict.note}</div>
+      </div>`;
+    }
+
     // ---- ORDER FLOW PROXY CARD ----
     let ofHtml = '';
     if (a.oiAnalysis || a.lsData || a.takerDelta) {
@@ -1297,7 +1418,7 @@ async function run(forcedSym) {
     }
     clHtml+=`<div style="height:6px;background:#1e2a2b;border-radius:3px;margin-top:10px;overflow:hidden"><div style="height:100%;border-radius:3px;width:${score/checks.length*100}%;background:${scoreColor}"></div></div>`;
     clHtml+=`<div style="font-size:11px;margin-top:6px;font-weight:700;color:${scoreColor}">${score}/${checks.length} — ${scoreLabel}</div></div>`;
-    clHtml = ofHtml + clHtml;
+    clHtml = conflictHtml + ofHtml + clHtml;
 
 
     // ---- CARDS ----
@@ -1312,6 +1433,7 @@ async function run(forcedSym) {
       a.oiAnalysis?`Open Interest: ${a.oiAnalysis.oiChangePct>=0?'+':''}${a.oiAnalysis.oiChangePct}% — ${a.oiAnalysis.signal}`:'',
       a.lsData?`Long/Short трейдеров: ${a.lsData.longPct}%/${a.lsData.shortPct}% (ratio ${a.lsData.ratio})`:'',
       a.takerDelta?`Тейкер дельта: ${a.takerDelta.buyPct}% покупка / ${a.takerDelta.sellPct}% продажа`:'',
+      a.signalConflict?`⚠ КОНФЛИКТ СИГНАЛОВ: ${a.signalConflict.note}`:'',
       ``,`ЧЕКЛИСТ: ${score}/${checks.length} — ${scoreLabel}`,
       ...checks.map(c=>`${c.ok?'✓':'✗'} ${c.label}`),``
     ];
