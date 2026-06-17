@@ -909,13 +909,13 @@ function detectRegime(candles, boll) {
   const bollWidth = boll.width;
   let regime, warning;
   if (efficiency > 0.4 && netMove > 3) {
-    regime = 'ТРЕНД';
+    regime = 'Тренд';
     warning = false;
   } else if (bollWidth < 4) {
-    regime = 'СЖАТИЕ (флэт перед движением)';
+    regime = 'Сжатие (накопление перед движением)';
     warning = false;
   } else {
-    regime = 'ФЛЭТ / ШУМ (казино-режим)';
+    regime = 'Боковик низкой эффективности';
     warning = true;
   }
   return { regime, efficiency: (efficiency * 100).toFixed(0), warning, netMove: netMove.toFixed(1) };
@@ -1030,7 +1030,15 @@ async function fetchAnalysis(sym, N) {
   const trend1d = d1.ma7 && d1.price > d1.ma7 && d1.ma7 > d1.ma25 ? 'бычий' : d1.ma7 && d1.price < d1.ma7 && d1.ma7 < d1.ma25 ? 'медвежий' : 'боковик';
   checks.push({ ok: trend1d !== 'боковик', label: `Тренд 1D: ${trend1d}`, neutral: trend1d === 'боковик' });
   const trend4h = d4.r6 > 50 && d4.macd && d4.macd.hist > 0 ? 'бычий' : d4.r6 < 50 && d4.macd && d4.macd.hist < 0 ? 'медвежий' : 'нейтральный';
-  checks.push({ ok: trend4h !== 'нейтральный', label: `4H подтверждает: ${trend4h}`, neutral: trend4h === 'нейтральный' });
+  // "Совпадает" only counts as true confirmation if 1D actually has a trend AND 4H matches it.
+  // If 1D is sideways, 4H can't "confirm" anything — it's just showing its own independent direction.
+  const aligns = trend1d !== 'боковик' && trend4h === trend1d;
+  const trend4hLabel = trend1d === 'боковик'
+    ? `4H тренд: ${trend4h} (1D без направления, не от чего подтверждать)`
+    : aligns
+      ? `4H подтверждает: ${trend4h}`
+      : `4H противоречит: ${trend4h} (на 1D — ${trend1d})`;
+  checks.push({ ok: trend1d === 'боковик' ? trend4h !== 'нейтральный' : aligns, label: trend4hLabel, neutral: trend4h === 'нейтральный' });
   const rsiOk = d1h.r6 > 20 && d1h.r6 < 80;
   checks.push({ ok: rsiOk, label: `RSI(6) 1H: ${fn(d1h.r6)} — ${rsiOk ? 'допустимый' : 'ЭКСТРИМ ⚠'}` });
   const volOk = d15.volRatio > 0.8;
@@ -1046,7 +1054,7 @@ async function fetchAnalysis(sym, N) {
   const fundOk = fundingRate == null || Math.abs(fundingRate) < 0.1;
   checks.push({ ok: fundOk, label: `Funding: ${fundingRate != null ? ((fundingRate >= 0 ? '+' : '') + fundingRate.toFixed(4) + '%') : '—'} ${fundOk ? 'норма' : 'ЭКСТРИМ ⚠'}` });
   const regimeOk = !d1h.regime.warning;
-  checks.push({ ok: regimeOk, label: `Режим 1H: ${d1h.regime.regime}`, neutral: d1h.regime.regime.includes('СЖАТИЕ') });
+  checks.push({ ok: regimeOk, label: `Режим 1H: ${d1h.regime.regime}`, neutral: d1h.regime.regime.includes('Сжатие') });
   if (oiAnalysis) {
     const oiOk = !oiAnalysis.signal.includes('⚠');
     checks.push({ ok: oiOk, label: `Open Interest: ${oiAnalysis.oiChangePct >= 0 ? '+' : ''}${oiAnalysis.oiChangePct}% — ${oiAnalysis.signal}`, neutral: !oiOk && false });
