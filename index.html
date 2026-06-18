@@ -879,6 +879,38 @@ async function loadPresetList(type, btnEl) {
 }
 async function fetchFunding(sym){const r=await fetch(`https://fapi.binance.com/fapi/v1/premiumIndex?symbol=${sym}`);return r.ok?r.json():null;}
 
+// ===================== BTC MARKET CONTEXT =====================
+// Lightweight BTC trend check — only fetches 1H and 4H to minimise latency.
+// Used as a market-wide filter: if BTC is in a confirmed downtrend, long signals on altcoins
+// are flagged as counter-trend regardless of their individual technical setup.
+async function fetchBTCContext() {
+  try {
+    const [kl1h, kl4h, ticker] = await Promise.all([
+      fetchKlines('BTCUSDT', '1h', 50),
+      fetchKlines('BTCUSDT', '4h', 50),
+      fetchTicker('BTCUSDT').catch(() => null),
+    ]);
+    if (!kl1h || !kl4h) return null;
+    const calc = (candles) => {
+      const closes = candles.map(c => c.close);
+      const price = closes[closes.length - 1];
+      const r6 = rsi(closes, 6);
+      const m7 = sma(closes, 7), m25 = sma(closes, 25);
+      const trend = m7 && m25 ? (m7 > m25 && price > m7 ? 'бычий' : m7 < m25 && price < m7 ? 'медвежий' : 'боковик') : 'боковик';
+      return { price, r6, trend };
+    };
+    const h1 = calc(kl1h), h4 = calc(kl4h);
+    const change24 = ticker ? parseFloat(ticker.priceChangePercent) : null;
+    // Overall BTC signal: bearish if both 1H and 4H are bearish
+    const btcBearish = h1.trend === 'медвежий' && h4.trend === 'медвежий';
+    const btcBullish = h1.trend === 'бычий' && h4.trend === 'бычий';
+    const btcRsiExtreme = h1.r6 != null && h1.r6 < 20;
+    return { price: h1.price, change24, h1, h4, btcBearish, btcBullish, btcRsiExtreme };
+  } catch { return null; }
+}
+
+
+
 // ===================== ORDER FLOW PROXY DATA (OI, long/short ratio, aggTrade delta) =====================
 // Open Interest history — shows if OI is rising/falling alongside price (real new demand vs squeeze/unwind)
 async function fetchOIHistory(sym, period) {
@@ -1305,7 +1337,11 @@ async function run(forcedSym) {
   errEl.style.display='none';outEl.style.display='none';emptyEl.style.display='none';
 
   try{
-    const a = await fetchAnalysis(sym, N);
+    // Fetch main analysis and BTC context in parallel — BTC context is lightweight (only 1H/4H)
+    const [a, btcCtx] = await Promise.all([
+      fetchAnalysis(sym, N),
+      sym !== 'BTCUSDT' ? fetchBTCContext() : Promise.resolve(null),
+    ]);
     const tfData = a.tfData;
     const price = a.price, change24 = a.change24, vol24 = a.vol24, fundingRate = a.fundingRate, markPrice = a.markPrice;
     const checks = a.checks, score = a.score, scoreLabel = a.scoreLabel;
@@ -1330,7 +1366,35 @@ async function run(forcedSym) {
     const positions = getPositions();
     const posData = positions[sym];
     const sessionColor = session.overlap ? '#9be8a8' : session.sessions[0].includes('Мёртвая') ? '#ff9b9b' : '#ffb86b';
+
+    // BTC context banner
+    let btcBanner = '';
+    if (btcCtx) {
+      const bc = btcCtx;
+      let btcColor, btcIcon, btcText, btcWarn = '';
+      if (bc.btcBearish) {
+        btcColor = '#ff9b9b';
+        btcIcon = '📉';
+        btcText = `BTC медвежий (1H+4H) · ${bc.change24 != null ? (bc.change24 >= 0 ? '+' : '') + fn(bc.change24) + '%' : ''}`;
+        btcWarn = ' — лонги на альтах против тренда рынка';
+      } else if (bc.btcBullish) {
+        btcColor = '#9be8a8';
+        btcIcon = '📈';
+        btcText = `BTC бычий (1H+4H) · ${bc.change24 != null ? (bc.change24 >= 0 ? '+' : '') + fn(bc.change24) + '%' : ''}`;
+      } else {
+        btcColor = '#ffb86b';
+        btcIcon = '↔️';
+        btcText = `BTC боковик · ${bc.change24 != null ? (bc.change24 >= 0 ? '+' : '') + fn(bc.change24) + '%' : ''}`;
+      }
+      if (bc.btcRsiExtreme) btcText += ' · RSI 1H ' + fn(bc.h1.r6) + ' (перепродан)';
+      btcBanner = `<div style="width:100%;background:#0e1212;border:1px solid ${btcColor}33;border-radius:4px;padding:6px 10px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;font-size:11px">
+        <span style="color:${btcColor}">${btcIcon} ${btcText}<span style="color:#5a6a6b">${btcWarn}</span></span>
+        <span class="muted">${fp(bc.price)}</span>
+      </div>`;
+    }
+
     tb.innerHTML=`
+      ${btcBanner}
       <div style="width:100%;display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
         <div>
           <span class="ticker-sym">${sym}</span>
@@ -1427,6 +1491,7 @@ async function run(forcedSym) {
     const tl=[
       `${sym} — ${fp(price)} USDT`,`${now.toLocaleString('ru')}`,
       `Сессия: ${session.label}`,
+      btcCtx ? `BTC контекст: ${btcCtx.btcBearish?'медвежий (1H+4H)':btcCtx.btcBullish?'бычий (1H+4H)':'боковик'} · ${btcCtx.change24!=null?(btcCtx.change24>=0?'+':'')+fn(btcCtx.change24)+'%':''} · RSI 1H ${fn(btcCtx.h1.r6)}${btcCtx.btcBearish?' — лонги против тренда рынка':''}` : '',
       change24!=null?`Изменение 24h: ${chS}${fn(change24)}%`:'',
       vol24!=null?`Объём 24h: ${fvol(vol24)} USDT`:'',
       fundingRate!=null?`Funding: ${fundingRate>=0?'+':''}${fundingRate.toFixed(4)}%`:'',
