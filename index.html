@@ -1097,16 +1097,13 @@ function getVolumeZones(candles, currentPrice) {
   }));
 }
 
-async function fetchAnalysis(sym, N, btcCtx) {
+async function fetchAnalysis(sym, N) {
   N = N || 20;
   const LIMIT = Math.max(250, N + 150);
-  const [kl15, kl1h, kl4h, kl1d, ticker, funding, oiHist, lsRatio, aggTrades] = await Promise.all([
+  const [kl15, kl1h, kl4h, kl1d, ticker, funding] = await Promise.all([
     fetchKlines(sym, '15m', LIMIT), fetchKlines(sym, '1h', LIMIT),
     fetchKlines(sym, '4h', LIMIT), fetchKlines(sym, '1d', LIMIT),
     fetchTicker(sym).catch(() => null), fetchFunding(sym).catch(() => null),
-    fetchOIHistory(sym, '1h').catch(() => null),
-    fetchLongShortRatio(sym, '1h').catch(() => null),
-    fetchAggTrades(sym, 500).catch(() => null),
   ]);
   const klines = { '15m': kl15, '1h': kl1h, '4h': kl4h, '1d': kl1d };
 
@@ -1154,102 +1151,33 @@ async function fetchAnalysis(sym, N, btcCtx) {
   const fundingRate = funding ? parseFloat(funding.lastFundingRate) * 100 : null;
   const markPrice = funding ? parseFloat(funding.markPrice) : null;
 
-  // ---- CHECKLIST ----
-  // Flat list of all data points. No tiers, no automatic weighting formula, no computed verdict.
-  // The dashboard's job is to surface the raw numbers — interpreting which ones matter more
-  // in a given situation is a judgment call made in the moment, not something a fixed formula
-  // can reliably encode (a percent-threshold rule missed a 1D RSI of 97.78 on BELUSDT, for example).
+  // ---- CHECKLIST (original 8-point version) ----
   const d1 = tfData['1d'], d4 = tfData['4h'], d1h = tfData['1h'], d15 = tfData['15m'];
 
   const trend1d = d1.ma7 && d1.price > d1.ma7 && d1.ma7 > d1.ma25 ? 'бычий' : d1.ma7 && d1.price < d1.ma7 && d1.ma7 < d1.ma25 ? 'медвежий' : 'боковик';
   const trend4h = d4.r6 > 50 && d4.macd && d4.macd.hist > 0 ? 'бычий' : d4.r6 < 50 && d4.macd && d4.macd.hist < 0 ? 'медвежий' : 'нейтральный';
   const aligns4h = trend1d !== 'боковик' && trend4h === trend1d;
-  const volCritical = d15.volRatio < 0.4;
   const volOk = d15.volRatio > 0.8;
 
-  // ---- ORDER FLOW PROXY (OI trend, long/short ratio, taker delta) ----
-  const oiAnalysis = (oiHist && oiHist.length >= 2) ? analyzeOI(oiHist, change24 || 0) : null;
-  const lsLatest = (lsRatio && lsRatio.length) ? lsRatio[lsRatio.length - 1] : null;
-  const lsData = lsLatest ? {
-    longPct: (parseFloat(lsLatest.longAccount) * 100).toFixed(0),
-    shortPct: (parseFloat(lsLatest.shortAccount) * 100).toFixed(0),
-    ratio: parseFloat(lsLatest.longShortRatio).toFixed(2),
-  } : null;
-  const takerDelta = aggTrades ? computeTakerDelta(aggTrades) : null;
-
-  // ---- MULTI-TIMEFRAME RSI EXTREME CHECK ----
-  // Objective count of timeframes at a statistical RSI extreme (>=95 or <=5) — surfaced as raw
-  // data for the reader/analyst to weigh, not auto-folded into a score.
-  const rsiExtremeTFs = TFS.map(tf => ({ tf: tf.label, r6: tfData[tf.key].r6 }))
-    .filter(x => x.r6 != null && (x.r6 >= 95 || x.r6 <= 5));
-  const rsiExtremeCount = rsiExtremeTFs.length;
-  const rsiExtremeDirection = rsiExtremeCount > 0 ? (rsiExtremeTFs[0].r6 >= 95 ? 'верх' : 'низ') : null;
-
   const checks = [];
-  let btcAligned = true;
-  if (btcCtx && sym !== 'BTCUSDT') {
-    const btcDir = btcCtx.btcBearish ? 'медвежий' : btcCtx.btcBullish ? 'бычий' : 'боковик';
-    const tradeDir = trend1d !== 'боковик' ? trend1d : trend4h;
-    const btcOk = btcDir === 'боковик' || tradeDir === 'боковик' || btcDir === tradeDir;
-    btcAligned = btcOk;
-    checks.push({
-      ok: btcOk,
-      label: btcOk
-        ? `BTC контекст: ${btcDir} — совпадает с направлением монеты`
-        : `BTC контекст: ${btcDir} — ПРОТИВ направления монеты (${tradeDir})`,
-    });
-  }
   checks.push({ ok: trend1d !== 'боковик', label: `Тренд 1D: ${trend1d}`, neutral: trend1d === 'боковик' });
-  const trend4hLabel = trend1d === 'боковик'
-    ? `4H тренд: ${trend4h} (1D без направления, не от чего подтверждать)`
-    : aligns4h
-      ? `4H подтверждает: ${trend4h}`
-      : `4H противоречит: ${trend4h} (на 1D — ${trend1d})`;
-  checks.push({ ok: trend1d === 'боковик' ? trend4h !== 'нейтральный' : aligns4h, label: trend4hLabel, neutral: trend4h === 'нейтральный' });
+  checks.push({ ok: aligns4h, label: `4H подтверждает: ${trend4h}`, neutral: trend4h === 'нейтральный' });
   const rsiOk = d1h.r6 > 20 && d1h.r6 < 80;
   checks.push({ ok: rsiOk, label: `RSI(6) 1H: ${fn(d1h.r6)} — ${rsiOk ? 'допустимый' : 'ЭКСТРИМ ⚠'}` });
-  checks.push({ ok: !volCritical, label: `Объём 15M: ${fn(d15.volRatio, 2)}x avg — ${volCritical ? 'КРИТИЧЕСКИ низкий ⚠' : volOk ? 'норма' : 'низкий'}` });
+  checks.push({ ok: volOk, label: `Объём 15M: ${fn(d15.volRatio, 2)}x avg — ${volOk ? 'норма' : 'низкий'}` });
   const macdOk = d1h.macd && d1h.macd.hist !== null;
   checks.push({ ok: macdOk, label: `MACD 1H: ${macdOk ? (d1h.macd.hist > 0 ? 'положительный' : 'отрицательный') : 'нет данных'}`, neutral: !macdOk });
   const divWarn = d1h.div.bearDiv || d1h.div.bullDiv;
-  const divLabel1h = d1h.div.bearDiv ? 'медвежья ⚠' : d1h.div.bullDiv ? 'бычья ↑' : d1h.div.hiddenBullDiv ? 'скрытая бычья (продолжение тренда вверх)' : d1h.div.hiddenBearDiv ? 'скрытая медвежья (продолжение тренда вниз)' : 'нет';
-  checks.push({ ok: !divWarn, label: `Дивергенция 1H: ${divLabel1h}` });
+  checks.push({ ok: !divWarn, label: `Дивергенция 1H: ${d1h.div.bearDiv ? 'медвежья ⚠' : d1h.div.bullDiv ? 'бычья ↑' : 'нет'}` });
   const bollOk = d1h.boll && price > d1h.boll.lower && price < d1h.boll.upper;
   checks.push({ ok: bollOk, label: `Bollinger 1H: ${bollOk ? 'внутри полос' : 'за полосой ⚠'}` });
   const fundOk = fundingRate == null || Math.abs(fundingRate) < 0.1;
   checks.push({ ok: fundOk, label: `Funding: ${fundingRate != null ? ((fundingRate >= 0 ? '+' : '') + fundingRate.toFixed(4) + '%') : '—'} ${fundOk ? 'норма' : 'ЭКСТРИМ ⚠'}` });
-  const regimeOk = !d1h.regime.warning;
-  checks.push({ ok: regimeOk, label: `Режим 1H: ${d1h.regime.regime}`, neutral: d1h.regime.regime.includes('Сжатие') });
-  if (oiAnalysis) {
-    const oiOk = !oiAnalysis.signal.includes('⚠');
-    checks.push({ ok: oiOk, label: `Open Interest: ${oiAnalysis.oiChangePct >= 0 ? '+' : ''}${oiAnalysis.oiChangePct}% — ${oiAnalysis.signal}` });
-  }
-  if (rsiExtremeCount >= 1) {
-    checks.push({
-      ok: false,
-      label: rsiExtremeCount === 1
-        ? `RSI экстрим (${rsiExtremeTFs[0].tf}): ${fn(rsiExtremeTFs[0].r6)} — статистически редкий уровень`
-        : `RSI экстрим на ${rsiExtremeCount} ТФ одновременно (${rsiExtremeTFs.map(x => x.tf).join(', ')})`,
-    });
-  }
-
-  // Detect explicit conflict between trend/OI direction and multi-TF RSI extreme — surfaced as data
-  let signalConflict = null;
-  if (rsiExtremeCount >= 1) {
-    const trendDir = trend4h !== 'нейтральный' ? trend4h : trend1d;
-    const rsiSaysCorrection = rsiExtremeDirection === 'верх' && trendDir === 'бычий' || rsiExtremeDirection === 'низ' && trendDir === 'медвежий';
-    if (rsiSaysCorrection) {
-      signalConflict = {
-        rsiTFs: rsiExtremeCount, trendDir,
-        note: `RSI экстрим на ${rsiExtremeCount} ТФ (${rsiExtremeTFs.map(x => `${x.tf}: ${fn(x.r6)}`).join(', ')}) предполагает возможную краткосрочную коррекцию против тренда (${trendDir}). Нет фиксированного правила какой сигнал важнее — оцени по ситуации.`,
-      };
-    }
-  }
 
   const score = checks.filter(c => c.ok).length;
-  const scoreLabel = `${score}/${checks.length} проверок пройдено — интерпретация по контексту`;
+  const scoreLabel = score >= 7 ? 'СЕТАП СИЛЬНЫЙ — можно рассматривать вход' : score >= 5 ? 'СЕТАП СРЕДНИЙ — осторожно, уменьши размер' : 'СЕТАП СЛАБЫЙ — лучше пропустить';
 
-  return { sym, price, change24, vol24, fundingRate, markPrice, tfData, checks, score, scoreLabel, N, session, oiAnalysis, lsData, takerDelta, signalConflict, btcAligned };
+  return { sym, price, change24, vol24, fundingRate, markPrice, tfData, checks, score, scoreLabel, N, session };
 }
 
 function buildTextSummary(a) {
@@ -1261,10 +1189,6 @@ function buildTextSummary(a) {
     a.change24 != null ? `Изменение 24h: ${chS}${fn(a.change24)}%` : '',
     a.vol24 != null ? `Объём 24h: ${fvol(a.vol24)} USDT` : '',
     a.fundingRate != null ? `Funding: ${a.fundingRate >= 0 ? '+' : ''}${a.fundingRate.toFixed(4)}%` : '',
-    a.oiAnalysis ? `Open Interest: ${a.oiAnalysis.oiChangePct >= 0 ? '+' : ''}${a.oiAnalysis.oiChangePct}% — ${a.oiAnalysis.signal}` : '',
-    a.lsData ? `Long/Short трейдеров: ${a.lsData.longPct}%/${a.lsData.shortPct}% (ratio ${a.lsData.ratio})` : '',
-    a.takerDelta ? `Тейкер дельта: ${a.takerDelta.buyPct}% покупка / ${a.takerDelta.sellPct}% продажа` : '',
-    a.signalConflict ? `⚠ КОНФЛИКТ СИГНАЛОВ: ${a.signalConflict.note}` : '',
     ``, `ЧЕКЛИСТ: ${a.score}/${a.checks.length} — ${a.scoreLabel}`,
     ...a.checks.map(c => `${c.ok ? '✓' : c.neutral ? '○' : '✗'} ${c.label}`),
     ``
@@ -1381,10 +1305,7 @@ async function run(forcedSym) {
   errEl.style.display='none';outEl.style.display='none';emptyEl.style.display='none';
 
   try{
-    // BTC context is fetched first (lightweight, only 1H/4H) since the Tier 1 filter inside
-    // fetchAnalysis needs it to flag counter-trend setups before the rest of the analysis runs.
-    const btcCtx = sym !== 'BTCUSDT' ? await fetchBTCContext() : null;
-    const a = await fetchAnalysis(sym, N, btcCtx);
+    const a = await fetchAnalysis(sym, N);
     const tfData = a.tfData;
     const price = a.price, change24 = a.change24, vol24 = a.vol24, fundingRate = a.fundingRate, markPrice = a.markPrice;
     const checks = a.checks, score = a.score, scoreLabel = a.scoreLabel;
@@ -1393,7 +1314,7 @@ async function run(forcedSym) {
     currentSymbol = sym;
     addRecent(sym);
 
-    const scoreColor = score >= checks.length * 0.7 ? '#9be8a8' : score >= checks.length * 0.5 ? '#ffb86b' : '#ff9b9b';
+    const scoreColor=score>=7?'#9be8a8':score>=5?'#ffb86b':'#ff9b9b';
     const session = a.session;
 
     // ---- TICKER BAR ----
@@ -1410,34 +1331,7 @@ async function run(forcedSym) {
     const posData = positions[sym];
     const sessionColor = session.overlap ? '#9be8a8' : session.sessions[0].includes('Мёртвая') ? '#ff9b9b' : '#ffb86b';
 
-    // BTC context banner
-    let btcBanner = '';
-    if (btcCtx) {
-      const bc = btcCtx;
-      let btcColor, btcIcon, btcText, btcWarn = '';
-      if (bc.btcBearish) {
-        btcColor = '#ff9b9b';
-        btcIcon = '📉';
-        btcText = `BTC медвежий (1H+4H) · ${bc.change24 != null ? (bc.change24 >= 0 ? '+' : '') + fn(bc.change24) + '%' : ''}`;
-        btcWarn = ' — лонги на альтах против тренда рынка';
-      } else if (bc.btcBullish) {
-        btcColor = '#9be8a8';
-        btcIcon = '📈';
-        btcText = `BTC бычий (1H+4H) · ${bc.change24 != null ? (bc.change24 >= 0 ? '+' : '') + fn(bc.change24) + '%' : ''}`;
-      } else {
-        btcColor = '#ffb86b';
-        btcIcon = '↔️';
-        btcText = `BTC боковик · ${bc.change24 != null ? (bc.change24 >= 0 ? '+' : '') + fn(bc.change24) + '%' : ''}`;
-      }
-      if (bc.btcRsiExtreme) btcText += ' · RSI 1H ' + fn(bc.h1.r6) + ' (перепродан)';
-      btcBanner = `<div style="width:100%;background:#0e1212;border:1px solid ${btcColor}33;border-radius:4px;padding:6px 10px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;font-size:11px">
-        <span style="color:${btcColor}">${btcIcon} ${btcText}<span style="color:#5a6a6b">${btcWarn}</span></span>
-        <span class="muted">${fp(bc.price)}</span>
-      </div>`;
-    }
-
     tb.innerHTML=`
-      ${btcBanner}
       <div style="width:100%;display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
         <div>
           <span class="ticker-sym">${sym}</span>
@@ -1485,36 +1379,6 @@ async function run(forcedSym) {
         return `<span style="color:${color}">PnL: ${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}%</span>`;
       })()}</div>` : ''}`;
 
-    // ---- SIGNAL CONFLICT WARNING CARD ----
-    let conflictHtml = '';
-    if (a.signalConflict) {
-      conflictHtml = `<div class="card" style="border-color:#4a3a1e;background:#241c0e">
-        <div style="font-size:11px;font-weight:700;letter-spacing:.1em;color:#ffb86b;margin-bottom:8px">⚠ КОНФЛИКТ СИГНАЛОВ — НЕТ ЕДИНОГО ОТВЕТА</div>
-        <div style="font-size:12px;color:#e8d8b8;line-height:1.5">${a.signalConflict.note}</div>
-      </div>`;
-    }
-
-    // ---- ORDER FLOW PROXY CARD ----
-    let ofHtml = '';
-    if (a.oiAnalysis || a.lsData || a.takerDelta) {
-      ofHtml = `<div class="card" style="border-color:#2a2440;background:#150f24">
-        <div style="font-size:11px;font-weight:700;letter-spacing:.1em;color:#c8a8e8;margin-bottom:10px">ORDER FLOW PROXY (приближение, не точный order flow)</div>`;
-      if (a.oiAnalysis) {
-        const oiC = a.oiAnalysis.signal.includes('⚠') ? '#ff9b9b' : '#9be8a8';
-        ofHtml += `<div style="margin-bottom:8px;font-size:12px"><span class="muted">Open Interest: </span><span style="color:${oiC}">${a.oiAnalysis.oiChangePct >= 0 ? '+' : ''}${a.oiAnalysis.oiChangePct}%</span><br><span style="color:${oiC};font-size:11px">${a.oiAnalysis.signal}</span></div>`;
-      }
-      if (a.lsData) {
-        ofHtml += `<div style="margin-bottom:8px;font-size:12px"><span class="muted">Long/Short трейдеров: </span><span class="up">${a.lsData.longPct}% лонг</span> / <span class="dn">${a.lsData.shortPct}% шорт</span> <span class="muted">(ratio ${a.lsData.ratio})</span></div>`;
-      }
-      if (a.takerDelta) {
-        const buyDom = parseFloat(a.takerDelta.buyPct) > 55;
-        const sellDom = parseFloat(a.takerDelta.sellPct) > 55;
-        const deltaC = buyDom ? '#9be8a8' : sellDom ? '#ff9b9b' : '#5a6a6b';
-        ofHtml += `<div style="font-size:12px"><span class="muted">Тейкер дельта (~500 сделок): </span><span style="color:${deltaC}">${a.takerDelta.buyPct}% покупка / ${a.takerDelta.sellPct}% продажа</span></div>`;
-      }
-      ofHtml += `</div>`;
-    }
-
     // ---- CHECKLIST CARD ----
     let clHtml=`<div class="card" style="border-color:#1e3a2b;background:#0e1a1b">
       <div style="font-size:11px;font-weight:700;letter-spacing:.1em;color:#9be8a8;margin-bottom:10px">ЧЕКЛИСТ ВХОДА</div>`;
@@ -1524,9 +1388,7 @@ async function run(forcedSym) {
       clHtml+=`<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:12px"><span style="font-size:14px;width:18px;text-align:center;color:${color}">${icon}</span><span style="color:${color}">${c.label}</span></div>`;
     }
     clHtml+=`<div style="height:6px;background:#1e2a2b;border-radius:3px;margin-top:10px;overflow:hidden"><div style="height:100%;border-radius:3px;width:${score/checks.length*100}%;background:${scoreColor}"></div></div>`;
-    clHtml+=`<div style="font-size:11px;margin-top:6px;font-weight:700;color:${scoreColor}">${score}/${checks.length} проверок</div></div>`;
-    clHtml = conflictHtml + ofHtml + clHtml;
-
+    clHtml+=`<div style="font-size:11px;margin-top:6px;font-weight:700;color:${scoreColor}">${score}/${checks.length} — ${scoreLabel}</div></div>`;
 
     // ---- CARDS ----
     const cards=document.getElementById('cards');
@@ -1534,14 +1396,9 @@ async function run(forcedSym) {
     const tl=[
       `${sym} — ${fp(price)} USDT`,`${now.toLocaleString('ru')}`,
       `Сессия: ${session.label}`,
-      btcCtx ? `BTC контекст: ${btcCtx.btcBearish?'медвежий (1H+4H)':btcCtx.btcBullish?'бычий (1H+4H)':'боковик'} · ${btcCtx.change24!=null?(btcCtx.change24>=0?'+':'')+fn(btcCtx.change24)+'%':''} · RSI 1H ${fn(btcCtx.h1.r6)}${btcCtx.btcBearish?' — лонги против тренда рынка':''}` : '',
       change24!=null?`Изменение 24h: ${chS}${fn(change24)}%`:'',
       vol24!=null?`Объём 24h: ${fvol(vol24)} USDT`:'',
       fundingRate!=null?`Funding: ${fundingRate>=0?'+':''}${fundingRate.toFixed(4)}%`:'',
-      a.oiAnalysis?`Open Interest: ${a.oiAnalysis.oiChangePct>=0?'+':''}${a.oiAnalysis.oiChangePct}% — ${a.oiAnalysis.signal}`:'',
-      a.lsData?`Long/Short трейдеров: ${a.lsData.longPct}%/${a.lsData.shortPct}% (ratio ${a.lsData.ratio})`:'',
-      a.takerDelta?`Тейкер дельта: ${a.takerDelta.buyPct}% покупка / ${a.takerDelta.sellPct}% продажа`:'',
-      a.signalConflict?`⚠ КОНФЛИКТ СИГНАЛОВ: ${a.signalConflict.note}`:'',
       ``,`ЧЕКЛИСТ: ${score}/${checks.length} — ${scoreLabel}`,
       ...checks.map(c=>`${c.ok?'✓':c.neutral?'○':'✗'} ${c.label}`),
       ``
