@@ -128,6 +128,7 @@ button.go:disabled{background:#1a2223;color:#3d5052;cursor:default;}
 
   <div class="tabs">
     <div class="tab active" id="tabAnalyze" onclick="switchTab('analyze')">Анализ</div>
+    <div class="tab" id="tabScanner" onclick="switchTab('scanner')">Сканер<span class="badge" id="scanCount" style="display:none">0</span></div>
     <div class="tab" id="tabPositions" onclick="switchTab('positions')">Мои позиции<span class="badge" id="posCount">0</span></div>
   </div>
 
@@ -185,6 +186,50 @@ button.go:disabled{background:#1a2223;color:#3d5052;cursor:default;}
     </div>
   </div>
 
+  <!-- SCANNER TAB -->
+  <div id="viewScanner" class="hidden">
+    <div style="background:#111718;border:1px solid #1e2a2b;border-radius:6px;padding:12px;margin-bottom:14px">
+      <div style="font-size:11px;color:#3a4e50;margin-bottom:8px">Пул монет для сканирования</div>
+      <div class="input-row" style="margin-bottom:10px">
+        <button class="preset-btn" id="scanPoolVolume" onclick="setScanPool('volume')">📊 Топ объёма</button>
+        <button class="preset-btn" id="scanPoolGainers" onclick="setScanPool('gainers')">🚀 Топ роста</button>
+        <button class="preset-btn" id="scanPoolLosers" onclick="setScanPool('losers')">📉 Топ падения</button>
+      </div>
+      <div class="input-row" style="margin-bottom:10px;align-items:center">
+        <span style="font-size:11px;color:#3a4e50;white-space:nowrap">Порог чеклиста:</span>
+        <select id="scanThreshold" style="background:#0e1516;border:1px solid #1e2a2b;border-radius:4px;color:#9be8a8;padding:8px;font-family:inherit;font-size:12px;flex:1">
+          <option value="8">8/8 — только идеальные</option>
+          <option value="7" selected>7+/8 — сильные</option>
+          <option value="6">6+/8 — средние и сильные</option>
+        </select>
+      </div>
+      <div class="input-row" style="margin-bottom:10px;align-items:center">
+        <span style="font-size:11px;color:#3a4e50;white-space:nowrap">Сколько монет проверять:</span>
+        <input type="number" id="scanLimit" class="n-input" value="30" min="5" max="100" style="width:64px"/>
+      </div>
+      <div class="input-row" style="align-items:center">
+        <button class="go" id="scanBtn" onclick="runScan()" style="flex:1">СКАНИРОВАТЬ</button>
+        <label class="pos-toggle" style="white-space:nowrap">
+          <input type="checkbox" id="autoScanToggle" onchange="onAutoScanToggle()">
+          Авто
+        </label>
+        <select id="autoScanInterval" style="background:#0e1516;border:1px solid #1e2a2b;border-radius:4px;color:#9be8a8;padding:8px 6px;font-family:inherit;font-size:11px">
+          <option value="5">5 мин</option>
+          <option value="10" selected>10 мин</option>
+          <option value="15">15 мин</option>
+          <option value="30">30 мин</option>
+        </select>
+      </div>
+    </div>
+
+    <div id="scanStatus" style="font-size:11px;color:#3a4e50;margin-bottom:10px"></div>
+    <div id="scanResults"></div>
+    <div id="scanEmpty" class="empty">
+      Настрой пул и нажми "Сканировать"<br>
+      <span style="font-size:11px">Дашборд прогонит чеклист по выбранным монетам и покажет только те, что прошли порог</span>
+    </div>
+  </div>
+
   <!-- POSITIONS TAB -->
   <div id="viewPositions" class="hidden">
     <div class="input-row" id="posUpdateRow" style="margin-bottom:14px;display:none">
@@ -223,8 +268,10 @@ const TFS = [
 // ===================== TABS =====================
 function switchTab(tab) {
   document.getElementById('tabAnalyze').classList.toggle('active', tab === 'analyze');
+  document.getElementById('tabScanner').classList.toggle('active', tab === 'scanner');
   document.getElementById('tabPositions').classList.toggle('active', tab === 'positions');
   document.getElementById('viewAnalyze').classList.toggle('hidden', tab !== 'analyze');
+  document.getElementById('viewScanner').classList.toggle('hidden', tab !== 'scanner');
   document.getElementById('viewPositions').classList.toggle('hidden', tab !== 'positions');
   if (tab === 'positions') renderPositions();
 }
@@ -575,6 +622,7 @@ function selectSymbol(sym) {
 // Used when clicking a coin from a top-list (gainers/losers/volume) — keeps the list
 // cached so the user can return to it via the "back to list" button instead of losing their place.
 function selectSymbolFromPreset(sym) {
+  switchTab('analyze');
   lastPresetType = activePreset;
   lastPresetHtml = document.getElementById('presetList').innerHTML;
   document.getElementById('sym').value = sym.replace(currentQuote, '');
@@ -614,6 +662,120 @@ function hidePresetList() {
   document.getElementById('presetList').classList.add('hidden');
   document.getElementById('presetList').innerHTML = '';
   document.getElementById('backToListBtn').style.display = 'none';
+}
+
+// ===================== SCANNER =====================
+// Scans a pool of symbols (top by volume/gainers/losers) and runs the same checklist used in
+// the Analyze tab on each one, surfacing only the symbols that pass the chosen score threshold.
+// Sequential (not parallel) requests are used deliberately to avoid hammering the Binance API —
+// each fetchAnalysis call already makes ~6 requests, so scanning 30 symbols is ~180 requests.
+let scanPool = 'volume';
+let scanRunning = false;
+let autoScanTimer = null;
+let knownStrongSetups = new Set(); // tracks symbols already surfaced, so auto-scan can highlight genuinely NEW ones
+
+function setScanPool(pool) {
+  scanPool = pool;
+  document.getElementById('scanPoolVolume').classList.toggle('active', pool === 'volume');
+  document.getElementById('scanPoolGainers').classList.toggle('active', pool === 'gainers');
+  document.getElementById('scanPoolLosers').classList.toggle('active', pool === 'losers');
+}
+
+async function fetchScanPoolSymbols(pool, limit) {
+  const res = await fetch('https://fapi.binance.com/fapi/v1/ticker/24hr');
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  let data = await res.json();
+  data = data.filter(t => t.symbol.endsWith(currentQuote));
+  let sorted;
+  if (pool === 'gainers') sorted = data.sort((a, b) => parseFloat(b.priceChangePercent) - parseFloat(a.priceChangePercent));
+  else if (pool === 'losers') sorted = data.sort((a, b) => parseFloat(a.priceChangePercent) - parseFloat(b.priceChangePercent));
+  else sorted = data.sort((a, b) => parseFloat(b.quoteVolume) - parseFloat(a.quoteVolume));
+  return sorted.slice(0, limit).map(t => t.symbol);
+}
+
+async function runScan(isAuto) {
+  if (scanRunning) return;
+  scanRunning = true;
+  const btn = document.getElementById('scanBtn');
+  const statusEl = document.getElementById('scanStatus');
+  const resultsEl = document.getElementById('scanResults');
+  const emptyEl = document.getElementById('scanEmpty');
+  const threshold = parseInt(document.getElementById('scanThreshold').value, 10);
+  const limit = Math.min(100, Math.max(5, parseInt(document.getElementById('scanLimit').value, 10) || 30));
+
+  if (btn) { btn.disabled = true; btn.textContent = '...'; }
+  emptyEl.style.display = 'none';
+  statusEl.textContent = 'Загружаю список монет...';
+
+  try {
+    const symbols = await fetchScanPoolSymbols(scanPool, limit);
+    const results = [];
+    const newlyStrong = [];
+
+    for (let i = 0; i < symbols.length; i++) {
+      const sym = symbols[i];
+      statusEl.textContent = `Проверяю ${sym}... (${i + 1}/${symbols.length})`;
+      try {
+        const a = await fetchAnalysis(sym, 20);
+        if (a.score >= threshold) {
+          results.push({ sym, score: a.score, total: a.checks.length, price: a.price, change24: a.change24, scoreLabel: a.scoreLabel });
+          if (isAuto && !knownStrongSetups.has(sym)) newlyStrong.push(sym);
+          knownStrongSetups.add(sym);
+        }
+      } catch (e) { /* skip symbols that fail to fetch, don't abort the whole scan */ }
+    }
+
+    results.sort((a, b) => b.score - a.score);
+
+    const scanCountBadge = document.getElementById('scanCount');
+    if (results.length > 0) {
+      scanCountBadge.style.display = 'inline-block';
+      scanCountBadge.textContent = results.length;
+    } else {
+      scanCountBadge.style.display = 'none';
+    }
+
+    const now = new Date();
+    statusEl.textContent = `Готово ${now.toLocaleTimeString('ru')} — проверено ${symbols.length}, прошло порог ${threshold}+/8: ${results.length}`;
+
+    if (results.length === 0) {
+      resultsEl.innerHTML = '';
+      emptyEl.style.display = 'block';
+      emptyEl.innerHTML = `Ни одна монета не прошла порог ${threshold}+/8<br><span style="font-size:11px">Попробуй снизить порог или увеличить число проверяемых монет</span>`;
+    } else {
+      resultsEl.innerHTML = results.map(r => {
+        const isNew = isAuto && newlyStrong.includes(r.sym);
+        const chC = r.change24 >= 0 ? 'up' : 'dn';
+        const scoreColor = r.score >= 7 ? '#9be8a8' : '#ffb86b';
+        return `<div class="preset-item" onclick="selectSymbolFromPreset('${r.sym}')" style="${isNew ? 'border-color:#9be8a8' : ''}">
+          <span class="preset-item-sym">${r.sym.replace(currentQuote, '')}${isNew ? ' <span style="color:#9be8a8;font-size:10px">● НОВЫЙ</span>' : ''}</span>
+          <div class="preset-item-stats">
+            <span class="muted">${fp(r.price)}</span>
+            <span class="${chC}">${r.change24 >= 0 ? '+' : ''}${r.change24.toFixed(2)}%</span>
+            <span style="color:${scoreColor};font-weight:700">${r.score}/${r.total}</span>
+          </div>
+        </div>`;
+      }).join('');
+    }
+  } catch (e) {
+    statusEl.textContent = '';
+    resultsEl.innerHTML = '';
+    emptyEl.style.display = 'block';
+    emptyEl.innerHTML = `Ошибка сканирования: ${e.message}<br><span style="font-size:11px">Попробуй ещё раз</span>`;
+  } finally {
+    scanRunning = false;
+    if (btn) { btn.disabled = false; btn.textContent = 'СКАНИРОВАТЬ'; }
+  }
+}
+
+function onAutoScanToggle() {
+  const enabled = document.getElementById('autoScanToggle').checked;
+  if (autoScanTimer) { clearInterval(autoScanTimer); autoScanTimer = null; }
+  if (enabled) {
+    const minutes = parseInt(document.getElementById('autoScanInterval').value, 10);
+    runScan(true); // run immediately, then on interval
+    autoScanTimer = setInterval(() => runScan(true), minutes * 60 * 1000);
+  }
 }
 
 // ===================== INDICATOR MATH =====================
@@ -1582,6 +1744,8 @@ async function copyText(){
 renderRecent();
 updatePosCount();
 loadSymbols();
+setScanPool('volume');
 </script>
 </body>
 </html>
+
