@@ -433,7 +433,8 @@ async function runScan(isAuto){
     for(let i=0;i<symbols.length;i++){
       const sym=symbols[i];statusEl.textContent=`Проверяю ${sym}... (${i+1}/${symbols.length})`;
       try{
-        const a=await fetchAnalysis(sym,20);
+        const a=await fetchAnalysis(sym,20,true);
+        await new Promise(r=>setTimeout(r,120)); // пауза между монетами — бережём rate-limit
         if(a.score>=threshold){
           results.push({sym,score:a.score,total:a.checks.length,price:a.price,change24:a.change24,scoreLabel:a.scoreLabel});
           if(isAuto&&!knownStrongSetups.has(sym))newlyStrong.push(sym);
@@ -453,7 +454,7 @@ async function runScan(isAuto){
         return `<div class="preset-item" onclick="selectSymbolFromPreset('${r.sym}')" style="${isNew?'border-color:#9be8a8':''}"><span class="preset-item-sym">${r.sym.replace(currentQuote,'')}${isNew?' <span style="color:#9be8a8;font-size:10px">● НОВЫЙ</span>':''}</span><div class="preset-item-stats"><span class="muted">${fp(r.price)}</span><span class="${chC}">${r.change24>=0?'+':''}${r.change24.toFixed(2)}%</span><span style="color:${scoreColor};font-weight:700">${r.score}/${r.total}</span></div></div>`;
       }).join('');
     }
-  }catch(e){statusEl.textContent='';resultsEl.innerHTML='';emptyEl.style.display='block';emptyEl.innerHTML=`Ошибка сканирования: ${e.message}<br><span style="font-size:11px">Попробуй ещё раз</span>`;}
+  }catch(e){statusEl.textContent='';resultsEl.innerHTML='';emptyEl.style.display='block';const m418=e.message&&e.message.includes('418');emptyEl.innerHTML=m418?`⚠ Binance ограничил запросы (HTTP 418)<br><span style="font-size:11px">Слишком много монет/частые сканы. Подожди 2-3 мин, снизь число монет до 30-50</span>`:`Ошибка сканирования: ${e.message}<br><span style="font-size:11px">Попробуй ещё раз</span>`;}
   finally{scanRunning=false;if(btn){btn.disabled=false;btn.textContent='СКАНИРОВАТЬ';}}
 }
 function onAutoScanToggle(){
@@ -573,6 +574,14 @@ function estimateLiqZones(price){
   const levs=[10,25,50];
   return{longLiqs:levs.map(L=>({lev:L,price:price*(1-1/L)})),shortLiqs:levs.map(L=>({lev:L,price:price*(1+1/L)}))};
 }
+let _btcCache=null,_btcCacheTs=0;
+async function fetchBTCContextCached(){
+  const now=Date.now();
+  if(_btcCache&&(now-_btcCacheTs)<60000)return _btcCache;
+  const r=await fetchBTCContext();
+  if(r){_btcCache=r;_btcCacheTs=now;}
+  return r;
+}
 async function fetchBTCContext(){
   try{
     const [kl1h,kl4h,ticker]=await Promise.all([fetchKlines('BTCUSDT','1h',50),fetchKlines('BTCUSDT','4h',50),fetchTicker('BTCUSDT').catch(()=>null)]);
@@ -630,14 +639,20 @@ function getVolumeZones(candles,currentPrice){
   return zones.slice(0,3).map(z=>({price:z.price,distPct:distPct(z.price,currentPrice),totalVol:z.totalVol,bias:z.bullCount/z.count>0.6?'покупки':z.bullCount/z.count<0.4?'продажи':'смешанная'}));
 }
 
-async function fetchAnalysis(sym,N){
+async function fetchAnalysis(sym,N,lite){
   N=N||20;const LIMIT=Math.max(250,N+150);
-  const [kl15,kl1h,kl4h,kl1d,ticker,funding,oi1h,lsr,aggTr,btcCtx]=await Promise.all([
+  const [kl15,kl1h,kl4h,kl1d,ticker,funding]=await Promise.all([
     fetchKlines(sym,'15m',LIMIT),fetchKlines(sym,'1h',LIMIT),fetchKlines(sym,'4h',LIMIT),fetchKlines(sym,'1d',LIMIT),
     fetchTicker(sym).catch(()=>null),fetchFunding(sym).catch(()=>null),
-    fetchOIHistory(sym,'1h').catch(()=>null),fetchLongShortRatio(sym,'1h').catch(()=>null),fetchAggTrades(sym,1000).catch(()=>null),
-    sym!=='BTCUSDT'?fetchBTCContext().catch(()=>null):Promise.resolve(null),
   ]);
+  // Order-flow тянем ТОЛЬКО для детального анализа (не в сканере) — экономим запросы, избегаем 418
+  let oi1h=null,lsr=null,aggTr=null,btcCtx=null;
+  if(!lite){
+    [oi1h,lsr,aggTr,btcCtx]=await Promise.all([
+      fetchOIHistory(sym,'1h').catch(()=>null),fetchLongShortRatio(sym,'1h').catch(()=>null),fetchAggTrades(sym,1000).catch(()=>null),
+      sym!=='BTCUSDT'?fetchBTCContextCached().catch(()=>null):Promise.resolve(null),
+    ]);
+  }
   const klines={'15m':kl15,'1h':kl1h,'4h':kl4h,'1d':kl1d};const tfData={};
   for(const tf of TFS){
     const candles=klines[tf.key];const closes=candles.map(c=>c.close);const vols=candles.map(c=>c.qvol);const last=candles[candles.length-1];const recent=candles.slice(-N);
@@ -810,7 +825,12 @@ async function run(forcedSym){
     document.getElementById('rTs').textContent=now.toLocaleString('ru');
     outEl.style.display='block';
     document.getElementById('copyBtn').className='copy-btn';document.getElementById('copyBtn').textContent='КОПИРОВАТЬ СВОДКУ';
-  }catch(e){document.getElementById('error').textContent='⚠ '+e.message;document.getElementById('error').style.display='block';emptyEl.style.display='block';}
+  }catch(e){
+    let msg='⚠ '+e.message;
+    if(e.message&&e.message.includes('418'))msg='⚠ Binance временно ограничил запросы (HTTP 418 — слишком часто). Подожди 2-3 минуты и попробуй снова. Не нажимай анализ/сканер слишком часто подряд.';
+    if(e.message&&e.message.includes('429'))msg='⚠ Слишком много запросов (HTTP 429). Подожди минуту.';
+    document.getElementById('error').textContent=msg;document.getElementById('error').style.display='block';emptyEl.style.display='block';
+  }
   btn.disabled=false;btn.textContent='АНАЛИЗ';
 }
 
