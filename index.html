@@ -444,8 +444,8 @@ async function runScan(isAuto){
         const a=await fetchAnalysis(sym,20,true);
         await new Promise(r=>setTimeout(r,120)); // пауза между монетами — бережём rate-limit
         const sig=a.signal;
-        // Фильтр: показываем только СИГНАЛ или СЛАБЫЙ (не ПРОПУСК), чеклист как доп.условие
-        const pass=sig&&(sig.verdict==='СИГНАЛ'||(scanMode==='all'&&sig.verdict==='СЛАБЫЙ'))&&a.score>=threshold;
+        // В lite-режиме сканер выдаёт ПРОВЕРИТЬ (кандидат), полный анализ подтвердит/зарубит
+        const pass=sig&&(sig.verdict==='СИГНАЛ'||sig.verdict==='ПРОВЕРИТЬ'||(scanMode==='all'&&sig.verdict==='СЛАБЫЙ'))&&a.score>=threshold;
         if(pass){
           results.push({sym,score:a.score,total:a.checks.length,price:a.price,change24:a.change24,scoreLabel:a.scoreLabel,sigVerdict:sig.verdict,sigScore:sig.score,sigDir:sig.dir});
           if(isAuto&&!knownStrongSetups.has(sym))newlyStrong.push(sym);
@@ -457,14 +457,14 @@ async function runScan(isAuto){
     const scanCountBadge=document.getElementById('scanCount');
     if(results.length>0){scanCountBadge.style.display='inline-block';scanCountBadge.textContent=results.length;}else{scanCountBadge.style.display='none';}
     const now=new Date();
-    statusEl.textContent=`Готово ${now.toLocaleTimeString('ru')} — проверено ${symbols.length}, найдено сигналов: ${results.length}`;
+    statusEl.textContent=`Готово ${now.toLocaleTimeString('ru')} — проверено ${symbols.length}, кандидатов: ${results.length} (открой каждый для полной проверки order-flow)`;
     if(results.length===0){resultsEl.innerHTML='';emptyEl.style.display='block';emptyEl.innerHTML=`Ни одного сигнала среди проверенных<br><span style="font-size:11px">Это норма — реальные входы редки. Попробуй другой пул или больше монет, либо режим "+ СЛАБЫЕ"</span>`;}
     else{
       resultsEl.innerHTML=results.map(r=>{
         const isNew=isAuto&&newlyStrong.includes(r.sym);const chC=r.change24>=0?'up':'dn';
-        const sigColor=r.sigVerdict==='СИГНАЛ'?'#9be8a8':'#ffb86b';
+        const sigColor=r.sigVerdict==='СИГНАЛ'?'#9be8a8':r.sigVerdict==='ПРОВЕРИТЬ'?'#7ab8e8':'#ffb86b';
         const dirIcon=r.sigDir==='ЛОНГ'?'▲':'▼';
-        return `<div class="preset-item" onclick="selectSymbolFromPreset('${r.sym}')" style="${r.sigVerdict==='СИГНАЛ'?'border-color:#9be8a8':''}"><span class="preset-item-sym">${r.sym.replace(currentQuote,'')}${isNew?' <span style="color:#9be8a8;font-size:10px">● НОВЫЙ</span>':''}</span><div class="preset-item-stats"><span class="muted">${fp(r.price)}</span><span class="${chC}">${r.change24>=0?'+':''}${r.change24.toFixed(2)}%</span><span style="color:${sigColor};font-weight:700">${r.sigVerdict} ${dirIcon}${r.sigDir==='ЛОНГ'?'L':'S'} ${r.sigScore}/8</span></div></div>`;
+        return `<div class="preset-item" onclick="selectSymbolFromPreset('${r.sym}')" style="${r.sigVerdict==='СИГНАЛ'?'border-color:#9be8a8':r.sigVerdict==='ПРОВЕРИТЬ'?'border-color:#2a4a60':''}"><span class="preset-item-sym">${r.sym.replace(currentQuote,'')}${isNew?' <span style="color:#9be8a8;font-size:10px">● НОВЫЙ</span>':''}</span><div class="preset-item-stats"><span class="muted">${fp(r.price)}</span><span class="${chC}">${r.change24>=0?'+':''}${r.change24.toFixed(2)}%</span><span style="color:${sigColor};font-weight:700">${r.sigVerdict} ${dirIcon}${r.sigDir==='ЛОНГ'?'L':'S'} ${r.sigScore}/8</span></div></div>`;
       }).join('');
     }
   }catch(e){statusEl.textContent='';resultsEl.innerHTML='';emptyEl.style.display='block';const m418=e.message&&e.message.includes('418');emptyEl.innerHTML=m418?`⚠ Binance ограничил запросы (HTTP 418)<br><span style="font-size:11px">Слишком много монет/частые сканы. Подожди 2-3 мин, снизь число монет до 30-50</span>`:`Ошибка сканирования: ${e.message}<br><span style="font-size:11px">Попробуй ещё раз</span>`;}
@@ -770,14 +770,16 @@ function computeSignalScore(a){
   let dir,score,dq,rr;
   if(longS>=shortS){dir='ЛОНГ';score=longS;dq=longDQ;rr=rrLong;}
   else{dir='ШОРТ';score=shortS;dq=shortDQ;rr=rrShort;}
+  const lite=a.takerDelta==null;
+  // В lite-режиме (сканер) нет taker/OI для дисквалификаторов — поднимаем планку,
+  // чтобы не выдавать ложные сигналы, которые потом зарубит полный анализ.
+  const sigThreshold=lite?6:5;
   let verdict;
   if(dq)verdict='ПРОПУСК';
-  else if(score>=5)verdict='СИГНАЛ';
+  else if(score>=sigThreshold)verdict=lite?'ПРОВЕРИТЬ':'СИГНАЛ';
   else if(score>=3)verdict='СЛАБЫЙ';
   else verdict='ПРОПУСК';
-  // если оба направления дисквалифицированы — точно пропуск
   if(longDQ&&shortDQ)verdict='ПРОПУСК';
-  const lite=a.takerDelta==null;
   return {dir,score,verdict,dq,rr:rr.toFixed(1),longS,shortS,longDQ,shortDQ,lite,
     resAbove,supBelow};
 }
@@ -882,8 +884,8 @@ async function run(forcedSym){
     let verdictHtml='';
     if(a.signal){
       const s=a.signal;
-      const vColor=s.verdict==='СИГНАЛ'?'#9be8a8':s.verdict==='СЛАБЫЙ'?'#ffb86b':'#ff9b9b';
-      const vBg=s.verdict==='СИГНАЛ'?'#0e2415':s.verdict==='СЛАБЫЙ'?'#241e0e':'#240e0e';
+      const vColor=s.verdict==='СИГНАЛ'?'#9be8a8':s.verdict==='ПРОВЕРИТЬ'?'#7ab8e8':s.verdict==='СЛАБЫЙ'?'#ffb86b':'#ff9b9b';
+      const vBg=s.verdict==='СИГНАЛ'?'#0e2415':s.verdict==='ПРОВЕРИТЬ'?'#0e1a24':s.verdict==='СЛАБЫЙ'?'#241e0e':'#240e0e';
       const dirIcon=s.dir==='ЛОНГ'?'▲':'▼';
       verdictHtml=`<div class="card" style="border:2px solid ${vColor};background:${vBg};text-align:center">
         <div style="font-size:22px;font-weight:700;color:${vColor};letter-spacing:.05em">${s.verdict}${s.verdict!=='ПРОПУСК'?` ${dirIcon} ${s.dir}`:''}</div>
