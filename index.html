@@ -170,11 +170,19 @@ button.go:disabled{background:#1a2223;color:#3d5052;cursor:default;}
         <button class="preset-btn" id="scanPoolLosers" onclick="setScanPool('losers')">📉 Топ падения</button>
       </div>
       <div class="input-row" style="margin-bottom:10px;align-items:center">
-        <span style="font-size:11px;color:#3a4e50;white-space:nowrap">Порог чеклиста:</span>
+        <span style="font-size:11px;color:#3a4e50;white-space:nowrap">Режим:</span>
+        <select id="scanModeSel" onchange="scanMode=this.value" style="background:#0e1516;border:1px solid #1e2a2b;border-radius:4px;color:#9be8a8;padding:8px;font-family:inherit;font-size:12px;flex:1">
+          <option value="signal" selected>🎯 Только СИГНАЛЫ</option>
+          <option value="all">+ СЛАБЫЕ (на радар)</option>
+        </select>
+      </div>
+      <div class="input-row" style="margin-bottom:10px;align-items:center">
+        <span style="font-size:11px;color:#3a4e50;white-space:nowrap">Мин. чеклист:</span>
         <select id="scanThreshold" style="background:#0e1516;border:1px solid #1e2a2b;border-radius:4px;color:#9be8a8;padding:8px;font-family:inherit;font-size:12px;flex:1">
-          <option value="8">8/8 — только идеальные</option>
-          <option value="7" selected>7+/8 — сильные</option>
-          <option value="6">6+/8 — средние и сильные</option>
+          <option value="8">8/8</option>
+          <option value="7" selected>7+/8</option>
+          <option value="6">6+/8</option>
+          <option value="5">5+/8</option>
         </select>
       </div>
       <div class="input-row" style="margin-bottom:10px;align-items:center">
@@ -408,7 +416,7 @@ function backToPresetList(){
   document.querySelectorAll('.preset-btn').forEach(b=>{b.classList.toggle('active',b.textContent.trim().toLowerCase().includes(lastPresetType==='gainers'?'роста':lastPresetType==='losers'?'падения':'объёма'));});
 }
 function hidePresetList(){activePreset=null;lastPresetType=null;lastPresetHtml=null;document.querySelectorAll('.preset-btn').forEach(b=>b.classList.remove('active'));document.getElementById('presetList').classList.add('hidden');document.getElementById('presetList').innerHTML='';document.getElementById('backToListBtn').style.display='none';}
-let scanPool='volume';let scanRunning=false;let autoScanTimer=null;let knownStrongSetups=new Set();
+let scanPool='volume';let scanRunning=false;let autoScanTimer=null;let knownStrongSetups=new Set();let scanMode='signal';
 function setScanPool(pool){scanPool=pool;document.getElementById('scanPoolVolume').classList.toggle('active',pool==='volume');document.getElementById('scanPoolGainers').classList.toggle('active',pool==='gainers');document.getElementById('scanPoolLosers').classList.toggle('active',pool==='losers');}
 async function fetchScanPoolSymbols(pool,limit){
   const res=await fetch('https://fapi.binance.com/fapi/v1/ticker/24hr');
@@ -435,8 +443,11 @@ async function runScan(isAuto){
       try{
         const a=await fetchAnalysis(sym,20,true);
         await new Promise(r=>setTimeout(r,120)); // пауза между монетами — бережём rate-limit
-        if(a.score>=threshold){
-          results.push({sym,score:a.score,total:a.checks.length,price:a.price,change24:a.change24,scoreLabel:a.scoreLabel});
+        const sig=a.signal;
+        // Фильтр: показываем только СИГНАЛ или СЛАБЫЙ (не ПРОПУСК), чеклист как доп.условие
+        const pass=sig&&(sig.verdict==='СИГНАЛ'||(scanMode==='all'&&sig.verdict==='СЛАБЫЙ'))&&a.score>=threshold;
+        if(pass){
+          results.push({sym,score:a.score,total:a.checks.length,price:a.price,change24:a.change24,scoreLabel:a.scoreLabel,sigVerdict:sig.verdict,sigScore:sig.score,sigDir:sig.dir});
           if(isAuto&&!knownStrongSetups.has(sym))newlyStrong.push(sym);
           knownStrongSetups.add(sym);
         }
@@ -446,12 +457,14 @@ async function runScan(isAuto){
     const scanCountBadge=document.getElementById('scanCount');
     if(results.length>0){scanCountBadge.style.display='inline-block';scanCountBadge.textContent=results.length;}else{scanCountBadge.style.display='none';}
     const now=new Date();
-    statusEl.textContent=`Готово ${now.toLocaleTimeString('ru')} — проверено ${symbols.length}, прошло порог ${threshold}+/8: ${results.length}`;
-    if(results.length===0){resultsEl.innerHTML='';emptyEl.style.display='block';emptyEl.innerHTML=`Ни одна монета не прошла порог ${threshold}+/8<br><span style="font-size:11px">Попробуй снизить порог или увеличить число проверяемых монет</span>`;}
+    statusEl.textContent=`Готово ${now.toLocaleTimeString('ru')} — проверено ${symbols.length}, найдено сигналов: ${results.length}`;
+    if(results.length===0){resultsEl.innerHTML='';emptyEl.style.display='block';emptyEl.innerHTML=`Ни одного сигнала среди проверенных<br><span style="font-size:11px">Это норма — реальные входы редки. Попробуй другой пул или больше монет, либо режим "+ СЛАБЫЕ"</span>`;}
     else{
       resultsEl.innerHTML=results.map(r=>{
-        const isNew=isAuto&&newlyStrong.includes(r.sym);const chC=r.change24>=0?'up':'dn';const scoreColor=r.score>=7?'#9be8a8':'#ffb86b';
-        return `<div class="preset-item" onclick="selectSymbolFromPreset('${r.sym}')" style="${isNew?'border-color:#9be8a8':''}"><span class="preset-item-sym">${r.sym.replace(currentQuote,'')}${isNew?' <span style="color:#9be8a8;font-size:10px">● НОВЫЙ</span>':''}</span><div class="preset-item-stats"><span class="muted">${fp(r.price)}</span><span class="${chC}">${r.change24>=0?'+':''}${r.change24.toFixed(2)}%</span><span style="color:${scoreColor};font-weight:700">${r.score}/${r.total}</span></div></div>`;
+        const isNew=isAuto&&newlyStrong.includes(r.sym);const chC=r.change24>=0?'up':'dn';
+        const sigColor=r.sigVerdict==='СИГНАЛ'?'#9be8a8':'#ffb86b';
+        const dirIcon=r.sigDir==='ЛОНГ'?'▲':'▼';
+        return `<div class="preset-item" onclick="selectSymbolFromPreset('${r.sym}')" style="${r.sigVerdict==='СИГНАЛ'?'border-color:#9be8a8':''}"><span class="preset-item-sym">${r.sym.replace(currentQuote,'')}${isNew?' <span style="color:#9be8a8;font-size:10px">● НОВЫЙ</span>':''}</span><div class="preset-item-stats"><span class="muted">${fp(r.price)}</span><span class="${chC}">${r.change24>=0?'+':''}${r.change24.toFixed(2)}%</span><span style="color:${sigColor};font-weight:700">${r.sigVerdict} ${dirIcon}${r.sigDir==='ЛОНГ'?'L':'S'} ${r.sigScore}/8</span></div></div>`;
       }).join('');
     }
   }catch(e){statusEl.textContent='';resultsEl.innerHTML='';emptyEl.style.display='block';const m418=e.message&&e.message.includes('418');emptyEl.innerHTML=m418?`⚠ Binance ограничил запросы (HTTP 418)<br><span style="font-size:11px">Слишком много монет/частые сканы. Подожди 2-3 мин, снизь число монет до 30-50</span>`:`Ошибка сканирования: ${e.message}<br><span style="font-size:11px">Попробуй ещё раз</span>`;}
@@ -681,8 +694,94 @@ async function fetchAnalysis(sym,N,lite){
   const oiAnalysis=analyzeOI(oi1h,change24);const takerDelta=computeTakerDelta(aggTr);let lsRatio=null;
   if(lsr&&lsr.length){const latest=lsr[lsr.length-1];lsRatio={long:(parseFloat(latest.longAccount)*100).toFixed(0),short:(parseFloat(latest.shortAccount)*100).toFixed(0),ratio:parseFloat(latest.longShortRatio).toFixed(2)};}
   const liqZones=estimateLiqZones(price);
-  return{sym,price,change24,vol24,fundingRate,markPrice,tfData,checks,score,scoreLabel,N,session,oiAnalysis,takerDelta,lsRatio,btcCtx,liqZones};
+  const _a={sym,price,change24,vol24,fundingRate,markPrice,tfData,checks,score,scoreLabel,N,session,oiAnalysis,takerDelta,lsRatio,btcCtx,liqZones};
+  _a.signal=computeSignalScore(_a);
+  return _a;
 }
+
+// ===================== SIGNAL SCORE =====================
+// Считает отдельно лонг- и шорт-сигнал, возвращает лучший с вердиктом.
+// Использует order-flow если есть (детальный анализ), иначе упрощённо (сканер/lite).
+function computeSignalScore(a){
+  const d15=a.tfData['15m'],d1h=a.tfData['1h'],d4=a.tfData['4h'],d1=a.tfData['1d'];
+  const hi=d1.hi50,lo=d1.lo50,price=a.price;
+  const range=hi-lo||1;
+  const pos=(price-lo)/range; // 0=дно диапазона, 1=верх
+  const inLower=pos<0.34, inUpper=pos>0.66;
+  // реверсивные свечи
+  const lc15=d15.summary.lcType;
+  const bullRev=/молот|бычья маруботзу/.test(lc15);
+  const bearRev=/падающая звезда|медвежья маруботзу/.test(lc15);
+  // дивергенции (4H или 1D)
+  const bullDiv=d4.div.bullDiv||d4.div.hiddenBullDiv||d1.div.bullDiv||d1.div.hiddenBullDiv;
+  const bearDiv=d4.div.bearDiv||d4.div.hiddenBearDiv||d1.div.bearDiv||d1.div.hiddenBearDiv;
+  // RSI экстремумы
+  const rsiHighExtreme=(d15.r6>=80)||(d4.r6>=80)||(d1.r6>=80);
+  const rsiLowExtreme=(d15.r6<=20)||(d4.r6<=20)||(d1.r6<=20);
+  const vol15=d15.volRatio;
+  // order-flow (может отсутствовать в lite)
+  const tBuy=a.takerDelta?parseInt(a.takerDelta.buyPct):null;
+  const tSell=a.takerDelta?parseInt(a.takerDelta.sellPct):null;
+  const oiNewShorts=a.oiAnalysis&&a.oiAnalysis.signal.includes('Новые шорты');
+  const oiDemand=a.oiAnalysis&&a.oiAnalysis.signal.includes('Новый спрос');
+  const fundNeg=a.fundingRate!=null&&a.fundingRate<-0.005;
+  const fundPosHi=a.fundingRate!=null&&a.fundingRate>0.03;
+  // R/R до ближайшего уровня
+  const resAbove=d1h.levels.above[0]?d1h.levels.above[0].price:null;
+  const supBelow=d1h.levels.below[0]?d1h.levels.below[0].price:null;
+  const atr=d15.atr||price*0.005;
+  const rrLong=resAbove?((resAbove-price)/(1.5*atr)):0;
+  const rrShort=supBelow?((price-supBelow)/(1.5*atr)):0;
+
+  // ===== ЛОНГ =====
+  let longS=0, longDQ=null;
+  if(rsiHighExtreme)longDQ='RSI экстрим (перегрет)';
+  else if(tBuy!=null&&tBuy<40)longDQ='taker продаёт ('+tBuy+'%)';
+  else if(vol15<0.3)longDQ='объём мёртвый ('+vol15.toFixed(2)+'x)';
+  else if(oiNewShorts)longDQ='OI: набираются шорты';
+  else if(inUpper)longDQ='цена в верхней трети (поздно)';
+  if(!longDQ){
+    if(tBuy!=null&&tBuy>55)longS+=2;
+    if(bullRev)longS+=2;
+    if(bullDiv)longS+=1;
+    if(vol15>0.7)longS+=1;
+    if(oiDemand||fundNeg)longS+=1;
+    if(rrLong>=2)longS+=1;
+    if(inLower)longS+=1;
+  }
+
+  // ===== ШОРТ =====
+  let shortS=0, shortDQ=null;
+  if(rsiLowExtreme)shortDQ='RSI экстрим (перепродан)';
+  else if(tSell!=null&&tSell<40)shortDQ='taker покупает ('+tSell+'%)';
+  else if(vol15<0.3)shortDQ='объём мёртвый ('+vol15.toFixed(2)+'x)';
+  else if(inLower)shortDQ='цена в нижней трети (поздно)';
+  if(!shortDQ){
+    if(tSell!=null&&tSell>55)shortS+=2;
+    if(bearRev)shortS+=2;
+    if(bearDiv)shortS+=1;
+    if(vol15>0.7)shortS+=1;
+    if(oiNewShorts||fundPosHi)shortS+=1;
+    if(rrShort>=2)shortS+=1;
+    if(inUpper)shortS+=1;
+  }
+
+  // вердикт
+  let dir,score,dq,rr;
+  if(longS>=shortS){dir='ЛОНГ';score=longS;dq=longDQ;rr=rrLong;}
+  else{dir='ШОРТ';score=shortS;dq=shortDQ;rr=rrShort;}
+  let verdict;
+  if(dq)verdict='ПРОПУСК';
+  else if(score>=5)verdict='СИГНАЛ';
+  else if(score>=3)verdict='СЛАБЫЙ';
+  else verdict='ПРОПУСК';
+  // если оба направления дисквалифицированы — точно пропуск
+  if(longDQ&&shortDQ)verdict='ПРОПУСК';
+  const lite=a.takerDelta==null;
+  return {dir,score,verdict,dq,rr:rr.toFixed(1),longS,shortS,longDQ,shortDQ,lite,
+    resAbove,supBelow};
+}
+
 
 function orderFlowLines(a){
   const out=[];
@@ -694,9 +793,18 @@ function orderFlowLines(a){
   return out;
 }
 
+function sigVerdictLine(a){
+  if(!a.signal)return '';
+  const s=a.signal;
+  let line=`🎯 ВЕРДИКТ: ${s.verdict}`;
+  if(s.verdict!=='ПРОПУСК')line+=` ${s.dir} (score ${s.score}/8, R/R ~1:${s.rr})`;
+  if(s.verdict==='ПРОПУСК'&&s.dq)line+=` — ${s.dir}: ${s.dq}`;
+  if(s.lite)line+=' [упрощённо, без order-flow]';
+  return line;
+}
 function buildTextSummary(a){
   const now=new Date();const chS=a.change24==null?'':a.change24>=0?'+':'';
-  const tl=[`${a.sym} — ${fp(a.price)} USDT`,`${now.toLocaleString('ru')}`,a.session?`Сессия: ${a.session.label}`:'',a.change24!=null?`Изменение 24h: ${chS}${fn(a.change24)}%`:'',a.vol24!=null?`Объём 24h: ${fvol(a.vol24)} USDT`:'',a.fundingRate!=null?`Funding: ${a.fundingRate>=0?'+':''}${a.fundingRate.toFixed(4)}%`:'',``,`ЧЕКЛИСТ: ${a.score}/${a.checks.length} — ${a.scoreLabel}`,...a.checks.map(c=>`${c.ok?'✓':c.neutral?'○':'✗'} ${c.label}`),``];
+  const tl=[`${a.sym} — ${fp(a.price)} USDT`,`${now.toLocaleString('ru')}`,a.session?`Сессия: ${a.session.label}`:'',a.change24!=null?`Изменение 24h: ${chS}${fn(a.change24)}%`:'',a.vol24!=null?`Объём 24h: ${fvol(a.vol24)} USDT`:'',a.fundingRate!=null?`Funding: ${a.fundingRate>=0?'+':''}${a.fundingRate.toFixed(4)}%`:'',``,sigVerdictLine(a),``,`ЧЕКЛИСТ: ${a.score}/${a.checks.length} — ${a.scoreLabel}`,...a.checks.map(c=>`${c.ok?'✓':c.neutral?'○':'✗'} ${c.label}`),``];
   const ofl=orderFlowLines(a);if(ofl.length){tl.push('── ORDER FLOW ──',...ofl,'');}
   for(const tf of TFS){
     const t=a.tfData[tf.key];const s=t.summary;const vrT=t.volRatio>2?' ⚠ АНОМАЛ':t.volRatio>1.5?' высокий':t.volRatio<0.5?' низкий':'';const volBP=((s.volUp/(s.volUp+s.volDn||1))*100).toFixed(0);const atrStop=t.atr?Math.max(0,t.price-1.5*t.atr):null;const atrStopS=t.atr?t.price+1.5*t.atr:null;const bollW=t.boll?t.boll.width:null;const bollState=t.boll?(bollW<3?'СЖАТИЕ ⚡':bollW>8?'расширение':'норма'):'—';
@@ -770,7 +878,21 @@ async function run(forcedSym){
       </div>
       ${posData?`<div class="pos-fields" style="width:100%;margin-top:10px;padding-top:10px;border-top:1px solid #1a2425"><div class="pos-field entry"><label>ВХОД <span style="cursor:pointer;color:#9be8a8;text-decoration:underline" onclick="updatePosField('${sym}','entry','${price}')">⏎ тек.цена</span></label><input type="text" inputmode="decimal" value="${posData.entry||''}" placeholder="0.000" onchange="updatePosField('${sym}','entry',this.value)"></div><div class="pos-field stop"><label>СТОП</label><input type="text" inputmode="decimal" value="${posData.stop||''}" placeholder="0.000" onchange="updatePosField('${sym}','stop',this.value)"></div><div class="pos-field tp1"><label>ТЕЙК 1</label><input type="text" inputmode="decimal" value="${posData.tp1||''}" placeholder="0.000" onchange="updatePosField('${sym}','tp1',this.value)"></div><div class="pos-field tp2"><label>ТЕЙК 2</label><input type="text" inputmode="decimal" value="${posData.tp2||''}" placeholder="0.000" onchange="updatePosField('${sym}','tp2',this.value)"></div></div>`:''}
       ${posData&&posData.entry?`<div class="pos-pnl" style="width:100%;margin-top:8px">${(()=>{const pnl=calcPnlPct(posData.side,posData.entry,price);if(pnl==null)return'';const color=pnl>=0?'#9be8a8':'#ff9b9b';return `<span style="color:${color}">PnL: ${pnl>=0?'+':''}${pnl.toFixed(2)}%</span>`;})()}</div>`:''}`;
-    let clHtml=`<div class="card" style="border-color:#1e3a2b;background:#0e1a1b"><div style="font-size:11px;font-weight:700;letter-spacing:.1em;color:#9be8a8;margin-bottom:10px">ЧЕКЛИСТ ВХОДА</div>`;
+    // ── Карточка ВЕРДИКТА (вверху, крупно) ──
+    let verdictHtml='';
+    if(a.signal){
+      const s=a.signal;
+      const vColor=s.verdict==='СИГНАЛ'?'#9be8a8':s.verdict==='СЛАБЫЙ'?'#ffb86b':'#ff9b9b';
+      const vBg=s.verdict==='СИГНАЛ'?'#0e2415':s.verdict==='СЛАБЫЙ'?'#241e0e':'#240e0e';
+      const dirIcon=s.dir==='ЛОНГ'?'▲':'▼';
+      verdictHtml=`<div class="card" style="border:2px solid ${vColor};background:${vBg};text-align:center">
+        <div style="font-size:22px;font-weight:700;color:${vColor};letter-spacing:.05em">${s.verdict}${s.verdict!=='ПРОПУСК'?` ${dirIcon} ${s.dir}`:''}</div>
+        ${s.verdict!=='ПРОПУСК'?`<div style="font-size:13px;color:#aab4b4;margin-top:6px">Signal Score: <b style="color:${vColor}">${s.score}/8</b> · R/R ~1:${s.rr}</div>`:''}
+        ${s.verdict==='ПРОПУСК'&&s.dq?`<div style="font-size:12px;color:#ff9b9b;margin-top:6px">${s.dir}: ${s.dq}</div>`:''}
+        ${s.lite?'<div style="font-size:10px;color:#5a6a6b;margin-top:4px">упрощённый расчёт (без order-flow)</div>':`<div style="font-size:10px;color:#5a6a6b;margin-top:4px">лонг ${s.longS}/8 · шорт ${s.shortS}/8</div>`}
+      </div>`;
+    }
+    let clHtml=verdictHtml+`<div class="card" style="border-color:#1e3a2b;background:#0e1a1b"><div style="font-size:11px;font-weight:700;letter-spacing:.1em;color:#9be8a8;margin-bottom:10px">ЧЕКЛИСТ ВХОДА</div>`;
     for(const c of checks){const icon=c.neutral?'○':c.ok?'✓':'✗';const color=c.neutral?'#5a6a6b':c.ok?'#9be8a8':'#ff9b9b';clHtml+=`<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:12px"><span style="font-size:14px;width:18px;text-align:center;color:${color}">${icon}</span><span style="color:${color}">${c.label}</span></div>`;}
     clHtml+=`<div style="height:6px;background:#1e2a2b;border-radius:3px;margin-top:10px;overflow:hidden"><div style="height:100%;border-radius:3px;width:${score/checks.length*100}%;background:${scoreColor}"></div></div>`;
     clHtml+=`<div style="font-size:11px;margin-top:6px;font-weight:700;color:${scoreColor}">${score}/${checks.length} — ${scoreLabel}</div></div>`;
@@ -785,7 +907,7 @@ async function run(forcedSym){
       if(a.liqZones){ofh+=`<div class="section-label">ЗОНЫ ЛИКВИДАЦИЙ (магниты)</div><div class="line"><span class="up">↑ шорты: </span>${a.liqZones.shortLiqs.map(l=>`<span class="muted">${l.lev}x</span> ${fp(l.price)}`).join(' · ')}</div><div class="line"><span class="dn">↓ лонги: </span>${a.liqZones.longLiqs.map(l=>`<span class="muted">${l.lev}x</span> ${fp(l.price)}`).join(' · ')}</div>`;}
       ofh+=`</div>`;cards.innerHTML+=ofh;
     }
-    const tl=[`${sym} — ${fp(price)} USDT`,`${now.toLocaleString('ru')}`,`Сессия: ${session.label}`,change24!=null?`Изменение 24h: ${chS}${fn(change24)}%`:'',vol24!=null?`Объём 24h: ${fvol(vol24)} USDT`:'',fundingRate!=null?`Funding: ${fundingRate>=0?'+':''}${fundingRate.toFixed(4)}%`:'',``,`ЧЕКЛИСТ: ${score}/${checks.length} — ${scoreLabel}`,...checks.map(c=>`${c.ok?'✓':c.neutral?'○':'✗'} ${c.label}`),``];
+    const tl=[`${sym} — ${fp(price)} USDT`,`${now.toLocaleString('ru')}`,`Сессия: ${session.label}`,change24!=null?`Изменение 24h: ${chS}${fn(change24)}%`:'',vol24!=null?`Объём 24h: ${fvol(vol24)} USDT`:'',fundingRate!=null?`Funding: ${fundingRate>=0?'+':''}${fundingRate.toFixed(4)}%`:'',``,sigVerdictLine(a),``,`ЧЕКЛИСТ: ${score}/${checks.length} — ${scoreLabel}`,...checks.map(c=>`${c.ok?'✓':c.neutral?'○':'✗'} ${c.label}`),``];
     if(ofl.length){tl.push('── ORDER FLOW ──',...ofl,'');}
     for(const tf of TFS){
       const t=tfData[tf.key];const s=t.summary;const vrC=t.volRatio>2?'crit':t.volRatio>1.5?'warn':t.volRatio<0.5?'dn':'';const vrT=t.volRatio>2?' ⚠ АНОМАЛ':t.volRatio>1.5?' высокий':t.volRatio<0.5?' низкий':'';const volBP=((s.volUp/(s.volUp+s.volDn||1))*100).toFixed(0);const atrStop=t.atr?Math.max(0,t.price-1.5*t.atr):null;const atrStopS=t.atr?t.price+1.5*t.atr:null;const bollW=t.boll?t.boll.width:null;const bollState=t.boll?(bollW<3?'СЖАТИЕ ⚡':bollW>8?'расширение':'норма'):'—';const priceInBoll=t.boll?(t.price>=t.boll.upper?'выше верхней ⚠':t.price<=t.boll.lower?'ниже нижней ⚠':t.price>t.boll.mid?'выше средней':'ниже средней'):'—';
