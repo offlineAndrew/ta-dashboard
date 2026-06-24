@@ -739,9 +739,14 @@ function computeSignalScore(a){
   const rrLong=resAbove?((resAbove-price)/(1.5*atr)):0;
   const rrShort=supBelow?((price-supBelow)/(1.5*atr)):0;
 
+  const vol4hAnomaly=d4.volRatio>5;
   // ===== ЛОНГ =====
+  // Активный дамп: новые шорты набираются + сильный приток объёма + цена на дне +
+  // медвежья маруботзу. Лонговать ЭТО = ловить нож. Ждать стабилизации.
+  const activeDump=oiNewShorts&&(vol4hAnomaly||d15.summary.lcType.includes('медвежья маруботзу'))&&d1.r6<=20;
   let longS=0, longDQ=null;
-  if(rsiHighExtreme)longDQ='RSI '+rsiHighTF+'='+rsiHighVal.toFixed(0)+' перегрет (экстрим)';
+  if(activeDump)longDQ='активный дамп (шорты набираются, объём аномальный) — жди дна';
+  else if(rsiHighExtreme)longDQ='RSI '+rsiHighTF+'='+rsiHighVal.toFixed(0)+' перегрет (экстрим)';
   else if(tBuy!=null&&tBuy<40)longDQ='taker продаёт ('+tBuy+'%)';
   else if(vol15<0.3)longDQ='объём мёртвый ('+vol15.toFixed(2)+'x)';
   else if(oiNewShorts)longDQ='OI: набираются шорты';
@@ -757,8 +762,12 @@ function computeSignalScore(a){
   }
 
   // ===== ШОРТ =====
+  // Активный памп: OI растёт (новый спрос) + сильный приток объёма + цена в верхах.
+  // Шортить ЭТО опасно (нож наоборот) — даже на высоком RSI. Ждать разворота.
+  const activePump=oiDemand&&(vol4hAnomaly||d15.summary.lcType.includes('бычья маруботзу'))&&d1.r6>=80;
   let shortS=0, shortDQ=null;
-  if(rsiLowExtreme)shortDQ='RSI '+rsiLowTF+'='+rsiLowVal.toFixed(0)+' перепродан (экстрим)';
+  if(activePump)shortDQ='активный памп (OI растёт, объём аномальный) — жди разворота';
+  else if(rsiLowExtreme)shortDQ='RSI '+rsiLowTF+'='+rsiLowVal.toFixed(0)+' перепродан (экстрим)';
   else if(tSell!=null&&tSell<40)shortDQ='taker покупает ('+tSell+'%)';
   else if(vol15<0.3)shortDQ='объём мёртвый ('+vol15.toFixed(2)+'x)';
   else if(inLower)shortDQ='цена в нижней трети (поздно)';
