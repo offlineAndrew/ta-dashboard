@@ -716,9 +716,14 @@ function computeSignalScore(a){
   // дивергенции (4H или 1D)
   const bullDiv=d4.div.bullDiv||d4.div.hiddenBullDiv||d1.div.bullDiv||d1.div.hiddenBullDiv;
   const bearDiv=d4.div.bearDiv||d4.div.hiddenBearDiv||d1.div.bearDiv||d1.div.hiddenBearDiv;
-  // RSI экстремумы
-  const rsiHighExtreme=(d15.r6>=80)||(d4.r6>=80)||(d1.r6>=80);
-  const rsiLowExtreme=(d15.r6<=20)||(d4.r6<=20)||(d1.r6<=20);
+  // RSI экстремумы — с указанием ТФ для понятного вердикта
+  let rsiHighTF=null,rsiLowTF=null;
+  if(d15.r6>=80)rsiHighTF='15M';else if(d4.r6>=80)rsiHighTF='4H';else if(d1.r6>=80)rsiHighTF='1D';
+  if(d15.r6<=20)rsiLowTF='15M';else if(d4.r6<=20)rsiLowTF='4H';else if(d1.r6<=20)rsiLowTF='1D';
+  const rsiHighExtreme=rsiHighTF!==null;
+  const rsiLowExtreme=rsiLowTF!==null;
+  const rsiHighVal=rsiHighTF==='15M'?d15.r6:rsiHighTF==='4H'?d4.r6:rsiHighTF==='1D'?d1.r6:null;
+  const rsiLowVal=rsiLowTF==='15M'?d15.r6:rsiLowTF==='4H'?d4.r6:rsiLowTF==='1D'?d1.r6:null;
   const vol15=d15.volRatio;
   // order-flow (может отсутствовать в lite)
   const tBuy=a.takerDelta?parseInt(a.takerDelta.buyPct):null;
@@ -736,7 +741,7 @@ function computeSignalScore(a){
 
   // ===== ЛОНГ =====
   let longS=0, longDQ=null;
-  if(rsiHighExtreme)longDQ='RSI экстрим (перегрет)';
+  if(rsiHighExtreme)longDQ='RSI '+rsiHighTF+'='+rsiHighVal.toFixed(0)+' перегрет (экстрим)';
   else if(tBuy!=null&&tBuy<40)longDQ='taker продаёт ('+tBuy+'%)';
   else if(vol15<0.3)longDQ='объём мёртвый ('+vol15.toFixed(2)+'x)';
   else if(oiNewShorts)longDQ='OI: набираются шорты';
@@ -753,7 +758,7 @@ function computeSignalScore(a){
 
   // ===== ШОРТ =====
   let shortS=0, shortDQ=null;
-  if(rsiLowExtreme)shortDQ='RSI экстрим (перепродан)';
+  if(rsiLowExtreme)shortDQ='RSI '+rsiLowTF+'='+rsiLowVal.toFixed(0)+' перепродан (экстрим)';
   else if(tSell!=null&&tSell<40)shortDQ='taker покупает ('+tSell+'%)';
   else if(vol15<0.3)shortDQ='объём мёртвый ('+vol15.toFixed(2)+'x)';
   else if(inLower)shortDQ='цена в нижней трети (поздно)';
@@ -766,14 +771,16 @@ function computeSignalScore(a){
     if(rrShort>=2)shortS+=1;
     if(inUpper)shortS+=1;
   }
+  // R/R-причина для КАЖДОГО направления (для честного показа обеих сторон)
+  const MIN_RR=1.5;
+  if(!longDQ&&rrLong<MIN_RR)longDQ='нет хода вверх (R/R 1:'+rrLong.toFixed(1)+')';
+  if(!shortDQ&&rrShort<MIN_RR)shortDQ='нет хода вниз (R/R 1:'+rrShort.toFixed(1)+')';
 
   // вердикт
   let dir,score,dq,rr;
   if(longS>=shortS){dir='ЛОНГ';score=longS;dq=longDQ;rr=rrLong;}
   else{dir='ШОРТ';score=shortS;dq=shortDQ;rr=rrShort;}
   const lite=a.takerDelta==null;
-  // В lite-режиме (сканер) нет taker/OI для дисквалификаторов — поднимаем планку,
-  // чтобы не выдавать ложные сигналы, которые потом зарубит полный анализ.
   const sigThreshold=lite?6:5;
   let verdict;
   if(dq)verdict='ПРОПУСК';
@@ -782,7 +789,7 @@ function computeSignalScore(a){
   else verdict='ПРОПУСК';
   if(longDQ&&shortDQ)verdict='ПРОПУСК';
   return {dir,score,verdict,dq,rr:rr.toFixed(1),longS,shortS,longDQ,shortDQ,lite,
-    resAbove,supBelow};
+    resAbove,supBelow,rsiHighTF,rsiLowTF};
 }
 
 
@@ -800,8 +807,11 @@ function sigVerdictLine(a){
   if(!a.signal)return '';
   const s=a.signal;
   let line=`🎯 ВЕРДИКТ: ${s.verdict}`;
-  if(s.verdict!=='ПРОПУСК')line+=` ${s.dir} (score ${s.score}/8, R/R ~1:${s.rr})`;
-  if(s.verdict==='ПРОПУСК'&&s.dq)line+=` — ${s.dir}: ${s.dq}`;
+  if(s.verdict!=='ПРОПУСК'){
+    line+=` ${s.dir} (score ${s.score}/8, R/R ~1:${s.rr})`;
+  }else{
+    line+=` | ЛОНГ: ${s.longDQ||s.longS+'/8'} | ШОРТ: ${s.shortDQ||s.shortS+'/8'}`;
+  }
   if(s.lite)line+=' [упрощённо, без order-flow]';
   return line;
 }
@@ -891,7 +901,7 @@ async function run(forcedSym){
       verdictHtml=`<div class="card" style="border:2px solid ${vColor};background:${vBg};text-align:center">
         <div style="font-size:22px;font-weight:700;color:${vColor};letter-spacing:.05em">${s.verdict}${s.verdict!=='ПРОПУСК'?` ${dirIcon} ${s.dir}`:''}</div>
         ${s.verdict!=='ПРОПУСК'?`<div style="font-size:13px;color:#aab4b4;margin-top:6px">Signal Score: <b style="color:${vColor}">${s.score}/8</b> · R/R ~1:${s.rr}</div>`:''}
-        ${s.verdict==='ПРОПУСК'&&s.dq?`<div style="font-size:12px;color:#ff9b9b;margin-top:6px">${s.dir}: ${s.dq}</div>`:''}
+        ${s.verdict==='ПРОПУСК'?`<div style="font-size:11px;color:#ff9b9b;margin-top:6px;line-height:1.6">${s.longDQ?`▲ ЛОНГ: ${s.longDQ}`:`▲ ЛОНГ: ${s.longS}/8 баллов`}<br>${s.shortDQ?`▼ ШОРТ: ${s.shortDQ}`:`▼ ШОРТ: ${s.shortS}/8 баллов`}</div>`:''}
         ${s.lite?'<div style="font-size:10px;color:#5a6a6b;margin-top:4px">упрощённый расчёт (без order-flow)</div>':`<div style="font-size:10px;color:#5a6a6b;margin-top:4px">лонг ${s.longS}/8 · шорт ${s.shortS}/8</div>`}
       </div>`;
     }
