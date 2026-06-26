@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="ru">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -757,10 +757,10 @@ function computeSignalScore(a){
   const rsiLowVal=rsiLowTF==='15M'?d15.r6:rsiLowTF==='4H'?d4.r6:rsiLowTF==='1D'?d1.r6:null;
   // RSI 15M ровно 0 или 100 = отвесное движение ПРЯМО СЕЙЧАС, не разворотная точка.
   // Дисквалит оба направления — ждать стабилизации (зелёной/красной свечи).
-  const absExtremeLow=(d15.r6!=null&&d15.r6<=1)||(d1h.r6!=null&&d1h.r6<=1);
-  const absExtremeHigh=(d15.r6!=null&&d15.r6>=99)||(d1h.r6!=null&&d1h.r6>=99);
-  const absExtremeLowTF=(d15.r6!=null&&d15.r6<=1)?'15M':'1H';
-  const absExtremeHighTF=(d15.r6!=null&&d15.r6>=99)?'15M':'1H';
+  const absExtremeLow=(d15.r6!=null&&d15.r6<=1)||(d1h.r6!=null&&d1h.r6<=1)||(d4.r6!=null&&d4.r6<=1)||(d1.r6!=null&&d1.r6<=1);
+  const absExtremeHigh=(d15.r6!=null&&d15.r6>=99)||(d1h.r6!=null&&d1h.r6>=99)||(d4.r6!=null&&d4.r6>=99)||(d1.r6!=null&&d1.r6>=99);
+  const absExtremeLowTF=(d15.r6!=null&&d15.r6<=1)?'15M':(d1h.r6!=null&&d1h.r6<=1)?'1H':(d4.r6!=null&&d4.r6<=1)?'4H':'1D';
+  const absExtremeHighTF=(d15.r6!=null&&d15.r6>=99)?'15M':(d1h.r6!=null&&d1h.r6>=99)?'1H':(d4.r6!=null&&d4.r6>=99)?'4H':'1D';
   const vol15=d15.volRatio;
   // order-flow (может отсутствовать в lite)
   const tBuy=a.takerDelta?parseInt(a.takerDelta.buyPct):null;
