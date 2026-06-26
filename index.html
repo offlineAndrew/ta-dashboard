@@ -85,6 +85,9 @@ button.go:disabled{background:#1a2223;color:#3d5052;cursor:default;}
 .pos-remove{background:transparent;border:none;color:#5a6a6b;cursor:pointer;font-size:16px;padding:2px 6px;}
 .pos-analyze-btn{background:#0e1a1b;border:1px solid #2e4a4c;border-radius:4px;color:#9be8a8;cursor:pointer;font-size:11px;padding:5px 10px;font-family:inherit;white-space:nowrap;}
 .pos-analyze-btn:hover{background:#143018;}
+.scan-add-btn{background:#0e1a1b;border:1px solid #2e4a4c;border-radius:3px;color:#7ab8e8;cursor:pointer;font-size:10px;padding:2px 5px;font-family:inherit;white-space:nowrap;}
+.scan-add-btn.watch{color:#9be8a8;}
+.scan-add-btn:hover{background:#143018;}
 .pos-remove:hover{color:#ff9b9b;}
 .pos-side{font-size:10px;padding:2px 7px;border-radius:3px;font-weight:700;letter-spacing:.04em;}
 .pos-side.long{background:#143018;color:#9be8a8;}
@@ -114,7 +117,7 @@ button.go:disabled{background:#1a2223;color:#3d5052;cursor:default;}
   <div class="tabs">
     <div class="tab active" id="tabAnalyze" onclick="switchTab('analyze')">Analysis</div>
     <div class="tab" id="tabScanner" onclick="switchTab('scanner')">Scanner<span class="badge" id="scanCount" style="display:none">0</span></div>
-    <div class="tab" id="tabPositions" onclick="switchTab('positions')">My Positions<span class="badge" id="posCount">0</span></div>
+    <div class="tab" id="tabPositions" onclick="switchTab('positions')">My Positions<span class="badge" id="posCount">0</span><span class="badge" id="watchCount" style="display:none;background:#1e3a3a;color:#9be8a8">0</span></div>
   </div>
   <div id="viewAnalyze">
     <div class="search-wrap">
@@ -132,7 +135,7 @@ button.go:disabled{background:#1a2223;color:#3d5052;cursor:default;}
     </div>
     <div class="input-row" style="margin-bottom:14px">
       <span class="n-label" style="font-size:11px;color:#3a4e50;align-self:center">chart candles:</span>
-      <input type="number" id="nCandles" class="n-input" value="20" min="5" max="50"/>
+      <input type="number" id="nCandles" class="n-input" value="50" min="5" max="50"/>
       <button class="go" id="goBtn" onclick="run()" style="flex:1">ANALYZE</button>
     </div>
     <div class="recent-row" id="recentRow"></div>
@@ -140,6 +143,7 @@ button.go:disabled{background:#1a2223;color:#3d5052;cursor:default;}
       <button class="preset-btn" onclick="loadPresetList('gainers', this)">🚀 Top Gainers</button>
       <button class="preset-btn" onclick="loadPresetList('losers', this)">📉 Top Losers</button>
       <button class="preset-btn" onclick="loadPresetList('volume', this)">📊 Top Volume</button>
+      <button class="preset-btn" onclick="loadPresetList('tradfi', this)">🏛 Stocks &amp; Metals</button>
     </div>
     <div id="presetList" class="preset-list hidden"></div>
     <div id="error" class="error" style="display:none"></div>
@@ -180,14 +184,16 @@ button.go:disabled{background:#1a2223;color:#3d5052;cursor:default;}
         <span style="font-size:11px;color:#3a4e50;white-space:nowrap">Min. checklist:</span>
         <select id="scanThreshold" style="background:#0e1516;border:1px solid #1e2a2b;border-radius:4px;color:#9be8a8;padding:8px;font-family:inherit;font-size:12px;flex:1">
           <option value="8">8/8</option>
-          <option value="7" selected>7+/8</option>
+          <option value="7">7+/8</option>
           <option value="6">6+/8</option>
-          <option value="5">5+/8</option>
+          <option value="5" selected>5+/8</option>
         </select>
       </div>
       <div class="input-row" style="margin-bottom:10px;align-items:center">
         <span style="font-size:11px;color:#3a4e50;white-space:nowrap">Coins to scan:</span>
-        <input type="number" id="scanLimit" class="n-input" value="30" min="5" max="100" style="width:64px"/>
+        <input type="number" id="scanLimit" class="n-input" value="100" min="5" max="100" style="width:64px"/>
+        <span style="font-size:11px;color:#3a4e50;white-space:nowrap;margin-left:8px">Min vol $M:</span>
+        <input type="number" id="scanMinVol" class="n-input" value="20" min="0" max="10000" style="width:64px"/>
       </div>
       <div class="input-row" style="align-items:center">
         <button class="go" id="scanBtn" onclick="runScan()" style="flex:1">SCAN</button>
@@ -195,15 +201,22 @@ button.go:disabled{background:#1a2223;color:#3d5052;cursor:default;}
           <input type="checkbox" id="autoScanToggle" onchange="onAutoScanToggle()">
           Auto
         </label>
+        <label class="pos-toggle" style="white-space:nowrap" title="Sound + vibrate on new signal">
+          <input type="checkbox" id="soundToggle" checked>
+          🔔
+        </label>
         <select id="autoScanInterval" style="background:#0e1516;border:1px solid #1e2a2b;border-radius:4px;color:#9be8a8;padding:8px 6px;font-family:inherit;font-size:11px">
+          <option value="1" selected>1 min</option>
+          <option value="2">2 min</option>
           <option value="5">5 min</option>
-          <option value="10" selected>10 min</option>
+          <option value="10">10 min</option>
           <option value="15">15 min</option>
           <option value="30">30 min</option>
         </select>
       </div>
     </div>
-    <div id="scanStatus" style="font-size:11px;color:#3a4e50;margin-bottom:10px"></div>
+    <div id="scanStatus" style="font-size:11px;color:#3a4e50;margin-bottom:4px"></div>
+    <div id="scanCountdown" style="font-size:11px;color:#9be8a8;margin-bottom:10px"></div>
     <div id="scanResults"></div>
     <div id="scanEmpty" class="empty">
       Set pool and tap "Scan"<br>
@@ -220,6 +233,10 @@ button.go:disabled{background:#1a2223;color:#3d5052;cursor:default;}
       No open positions<br>
       <span style="font-size:11px">Check "In position" after analyzing a coin — it appears here</span>
     </div>
+    <div id="watchSection" style="margin-top:20px;display:none">
+      <div style="font-size:12px;color:#9be8a8;font-weight:700;margin-bottom:8px;border-top:1px solid #1e2a2b;padding-top:14px">👁 WATCHLIST <span style="color:#3a4e50;font-weight:400">— tracking signals from scanner</span></div>
+      <div id="watchList"></div>
+    </div>
   </div>
 </div>
 <script>
@@ -231,6 +248,8 @@ let currentSymbol=null;
 let suggestIndex=-1;
 let suggestFiltered=[];
 let activePreset=null;
+const TRADFI_ORDER=['PAXG','XAUT','XAG','XAGT','GOLD','SILVER','MU','AMD','NVDA','INTC','SKHYNIX','WDC','TSM','AVGO','QCOM','MRVL','SMCI','ARM','TSLA','AAPL','MSFT','META','GOOGL','AMZN','NFLX','SPCX','SPACEX','COIN','MSTR','HOOD','SAMSUNG','HYUNDAI','SPX','NDX','SPY','QQQ'];
+const TRADFI_SET=new Set(TRADFI_ORDER);
 const RECENT_KEY='ta_terminal_recent';
 const POSITIONS_KEY='ta_terminal_positions';
 const MAX_RECENT=8;
@@ -243,7 +262,7 @@ function switchTab(tab){
   document.getElementById('viewAnalyze').classList.toggle('hidden',tab!=='analyze');
   document.getElementById('viewScanner').classList.toggle('hidden',tab!=='scanner');
   document.getElementById('viewPositions').classList.toggle('hidden',tab!=='positions');
-  if(tab==='positions')renderPositions();
+  if(tab==='positions'){renderPositions();renderWatch();}
 }
 
 async function setQuote(q){
@@ -297,6 +316,27 @@ function togglePosition(symbol,checked,side,entry){
   setPositions(positions);
 }
 function removePosition(symbol){const positions=getPositions();delete positions[symbol];setPositions(positions);renderPositions();}
+const WATCH_KEY='ta_terminal_watch';
+function getWatch(){try{return JSON.parse(localStorage.getItem(WATCH_KEY))||{};}catch{return{};}}
+function setWatch(obj){localStorage.setItem(WATCH_KEY,JSON.stringify(obj));updateWatchCount();}
+function updateWatchCount(){const el=document.getElementById('watchCount');if(el){const n=Object.keys(getWatch()).length;el.textContent=n;el.style.display=n>0?'inline-block':'none';}}
+function removeWatch(symbol){const w=getWatch();delete w[symbol];setWatch(w);renderWatch();}
+// Добавить в watch из сканера: сохраняем то что предложил дашборд (направление, уровни, цена сигнала)
+function addToWatchFromScan(sym,ev){
+  if(ev)ev.stopPropagation();
+  const w=getWatch();
+  const meta=window._scanMeta&&window._scanMeta[sym]?window._scanMeta[sym]:{};
+  w[sym]={addedAt:Date.now(),sigPrice:meta.price||null,dir:meta.sigDir||null,verdict:meta.sigVerdict||null,score:meta.sigScore||null,resAbove:meta.resAbove||null,supBelow:meta.supBelow||null,note:meta.note||null};
+  setWatch(w);flashBtn(ev&&ev.target);
+}
+function addToPosFromScan(sym,ev){
+  if(ev)ev.stopPropagation();
+  const meta=window._scanMeta&&window._scanMeta[sym]?window._scanMeta[sym]:{};
+  const positions=getPositions();
+  positions[sym]={side:meta.sigDir==='SHORT'?'short':'long',entry:meta.price||null,addedAt:Date.now()};
+  setPositions(positions);flashBtn(ev&&ev.target);
+}
+function flashBtn(btn){if(!btn)return;const o=btn.textContent;btn.textContent='✓';setTimeout(()=>{btn.textContent=o;},1200);}
 function fmtPriceSmart(p){if(p==null||isNaN(p))return'—';p=parseFloat(p);if(p>=1000)return p.toFixed(2);if(p>=1)return p.toFixed(4);if(p>=0.01)return p.toFixed(5);return p.toFixed(7);}
 function calcPnlPct(side,entry,current){if(!entry||!current)return null;entry=parseFloat(entry);current=parseFloat(current);if(!entry||isNaN(current))return null;const raw=(current-entry)/entry*100;return side==='short'?-raw:raw;}
 async function fetchLastPrice(symbol){try{const r=await fetch(`https://fapi.binance.com/fapi/v1/ticker/price?symbol=${symbol}`);if(!r.ok)return null;const d=await r.json();return parseFloat(d.price);}catch{return null;}}
@@ -340,9 +380,59 @@ async function renderPositions(){
       const color=pnl>=0?'#9be8a8':'#ff9b9b';let distInfo='';
       if(p.stop){const distStop=calcPnlPct(p.side,p.entry,p.stop);distInfo+=` · to stop ${distStop!=null?distStop.toFixed(1):'—'}%`;}
       if(p.tp1){const distTp1=calcPnlPct(p.side,price,p.tp1);distInfo+=` · to TP1 ${distTp1!=null?(distTp1).toFixed(1):'—'}%`;}
-      pnlEl.innerHTML=`<span style="color:${color}">PnL: ${pnl>=0?'+':''}${pnl.toFixed(2)}%</span><span style="color:#3a4e50;font-weight:400">${distInfo}</span>`;
+      if(!window._prevPnl)window._prevPnl={};const prev=window._prevPnl[sym];let trend='';
+      if(prev!=null){const d=pnl-prev;if(Math.abs(d)>=0.01){trend=d>0?` <span style="color:#9be8a8;font-size:10px">▲${d.toFixed(2)}</span>`:` <span style="color:#ff9b9b;font-size:10px">▼${Math.abs(d).toFixed(2)}</span>`;}}
+      window._prevPnl[sym]=pnl;
+      pnlEl.innerHTML=`<span style="color:${color}">PnL: ${pnl>=0?'+':''}${pnl.toFixed(2)}%</span>${trend}<span style="color:#3a4e50;font-weight:400">${distInfo}</span>`;
     }
   }
+}
+async function renderWatch(){
+  const w=getWatch();const keys=Object.keys(w);
+  const sec=document.getElementById('watchSection');const listEl=document.getElementById('watchList');
+  if(!sec||!listEl)return;
+  if(!keys.length){sec.style.display='none';listEl.innerHTML='';return;}
+  sec.style.display='block';
+  listEl.innerHTML=keys.map(sym=>{
+    const it=w[sym];const date=new Date(it.addedAt);
+    const dirBadge=it.dir?`<span class="pos-side ${it.dir==='SHORT'?'short':'long'}">${it.dir}</span>`:'';
+    let levels='';
+    if(it.dir==='SHORT'&&it.supBelow)levels=`target ↓ ${fmtPriceSmart(it.supBelow)}`;
+    else if(it.dir==='LONG'&&it.resAbove)levels=`target ↑ ${fmtPriceSmart(it.resAbove)}`;
+    return `<div class="pos-card" id="watchcard-${sym}" style="border-color:#1e3a3a">
+      <div class="pos-head">
+        <div><span class="pos-sym">${sym}</span>${dirBadge}${it.score?`<span style="color:#3a4e50;font-size:11px;margin-left:6px">${it.verdict||''} ${it.score}/8</span>`:''}</div>
+        <div style="display:flex;gap:6px">
+          <button class="pos-analyze-btn" onclick="event.stopPropagation(); openFromPositions('${sym}')">📊</button>
+          <button class="pos-analyze-btn" style="border-color:#2a4a40;color:#9be8a8" onclick="event.stopPropagation(); promoteWatchToPos('${sym}')" title="Move to positions">→Pos</button>
+          <button class="pos-remove" onclick="event.stopPropagation(); removeWatch('${sym}')">✕</button>
+        </div>
+      </div>
+      <div class="pos-meta">watched since ${date.toLocaleString('en-US')}${levels?' · '+levels:''} <span id="watchlive-${sym}" style="color:#3a4e50">· loading...</span></div>
+      <div class="pos-pnl" id="watchchg-${sym}"></div>
+    </div>`;
+  }).join('');
+  for(const sym of keys){
+    const it=w[sym];const price=await fetchLastPrice(sym);
+    const liveEl=document.getElementById(`watchlive-${sym}`);const chgEl=document.getElementById(`watchchg-${sym}`);
+    if(!liveEl||!chgEl)continue;
+    if(price==null){liveEl.textContent='· price unavailable';continue;}
+    liveEl.innerHTML=`· now <strong style="color:#d8e0e0">${fmtPriceSmart(price)}</strong>`;
+    if(it.sigPrice){
+      const chg=(price-it.sigPrice)/it.sigPrice*100;
+      // для шорта выгодно падение, для лонга рост — показываем «в твою сторону»
+      const favorable=it.dir==='SHORT'?-chg:chg;
+      const color=favorable>=0?'#9be8a8':'#ff9b9b';const arrow=favorable>=0?'▲ in your favor':'▼ against';
+      chgEl.innerHTML=`<span style="color:${color}">since signal: ${chg>=0?'+':''}${chg.toFixed(2)}% <span style="font-size:10px">${arrow}</span></span><span style="color:#3a4e50;font-weight:400"> · signal @ ${fmtPriceSmart(it.sigPrice)}</span>`;
+    }else{chgEl.innerHTML='<span style="color:#3a4e50">no signal price stored</span>';}
+  }
+}
+function promoteWatchToPos(sym){
+  const w=getWatch();const it=w[sym]||{};
+  const positions=getPositions();
+  const live=document.getElementById(`watchcard-${sym}`);
+  positions[sym]={side:it.dir==='SHORT'?'short':'long',entry:it.sigPrice||null,addedAt:Date.now()};
+  setPositions(positions);delete w[sym];setWatch(w);renderWatch();renderPositions();
 }
 function updatePosField(sym,field,value){
   const positions=getPositions();if(!positions[sym])return;
@@ -418,11 +508,13 @@ function backToPresetList(){
 }
 function hidePresetList(){activePreset=null;lastPresetType=null;lastPresetHtml=null;document.querySelectorAll('.preset-btn').forEach(b=>b.classList.remove('active'));document.getElementById('presetList').classList.add('hidden');document.getElementById('presetList').innerHTML='';document.getElementById('backToListBtn').style.display='none';}
 let scanPool='volume';let scanRunning=false;let autoScanTimer=null;let knownStrongSetups=new Set();let scanMode='signal';
-function setScanPool(pool){scanPool=pool;document.getElementById('scanPoolVolume').classList.toggle('active',pool==='volume');document.getElementById('scanPoolGainers').classList.toggle('active',pool==='gainers');document.getElementById('scanPoolLosers').classList.toggle('active',pool==='losers');}
+function setScanPool(pool){scanPool=pool;document.getElementById('scanPoolVolume').classList.toggle('active',pool==='volume');document.getElementById('scanPoolGainers').classList.toggle('active',pool==='gainers');document.getElementById('scanPoolLosers').classList.toggle('active',pool==='losers');const li=document.getElementById('scanLimit');if(li){li.value=(pool==='volume')?100:50;}}
 async function fetchScanPoolSymbols(pool,limit){
   const res=await fetch('https://fapi.binance.com/fapi/v1/ticker/24hr');
   if(!res.ok)throw new Error(`HTTP ${res.status}`);
   let data=await res.json();data=data.filter(t=>t.symbol.endsWith(currentQuote));
+  const minVolEl=document.getElementById('scanMinVol');const minVol=minVolEl?(parseFloat(minVolEl.value)||0)*1e6:0;
+  if(minVol>0)data=data.filter(t=>parseFloat(t.quoteVolume)>=minVol);
   let sorted;
   if(pool==='gainers')sorted=data.sort((a,b)=>parseFloat(b.priceChangePercent)-parseFloat(a.priceChangePercent));
   else if(pool==='losers')sorted=data.sort((a,b)=>parseFloat(a.priceChangePercent)-parseFloat(b.priceChangePercent));
@@ -449,6 +541,7 @@ async function runScan(isAuto){
         const pass=sig&&(sig.verdict==='SIGNAL'||sig.verdict==='CHECK'||(scanMode==='all'&&sig.verdict==='WEAK'))&&a.score>=threshold;
         if(pass){
           results.push({sym,score:a.score,total:a.checks.length,price:a.price,change24:a.change24,scoreLabel:a.scoreLabel,sigVerdict:sig.verdict,sigScore:sig.score,sigDir:sig.dir});
+          if(!window._scanMeta)window._scanMeta={};window._scanMeta[sym]={price:a.price,sigVerdict:sig.verdict,sigScore:sig.score,sigDir:sig.dir,resAbove:sig.resAbove,supBelow:sig.supBelow,note:sig.mainSignal||null};
           if(isAuto&&!knownStrongSetups.has(sym))newlyStrong.push(sym);
           knownStrongSetups.add(sym);
         }
@@ -457,6 +550,7 @@ async function runScan(isAuto){
     results.sort((a,b)=>b.score-a.score);
     const scanCountBadge=document.getElementById('scanCount');
     if(results.length>0){scanCountBadge.style.display='inline-block';scanCountBadge.textContent=results.length;}else{scanCountBadge.style.display='none';}
+    if(isAuto&&newlyStrong.length>0&&document.getElementById('soundToggle')&&document.getElementById('soundToggle').checked){notifyNewSignal(newlyStrong);}
     const now=new Date();
     statusEl.textContent=`Done ${now.toLocaleTimeString('en-US')} — scanned ${symbols.length}, candidates: ${results.length} (open each for full order-flow check)`;
     if(results.length===0){resultsEl.innerHTML='';emptyEl.style.display='block';emptyEl.innerHTML=`No signals among scanned coins<br><span style="font-size:11px">This is normal — real entries are rare. Try another pool or more coins, or "+ WEAK" mode</span>`;}
@@ -465,7 +559,7 @@ async function runScan(isAuto){
         const isNew=isAuto&&newlyStrong.includes(r.sym);const chC=r.change24>=0?'up':'dn';
         const sigColor=r.sigVerdict==='SIGNAL'?'#9be8a8':r.sigVerdict==='CHECK'?'#7ab8e8':'#ffb86b';
         const dirIcon=r.sigDir==='LONG'?'▲':'▼';
-        return `<div class="preset-item" onclick="selectSymbolFromPreset('${r.sym}')" style="${r.sigVerdict==='SIGNAL'?'border-color:#9be8a8':r.sigVerdict==='CHECK'?'border-color:#2a4a60':''}"><span class="preset-item-sym">${r.sym.replace(currentQuote,'')}${isNew?' <span style="color:#9be8a8;font-size:10px">● NEW</span>':''}</span><div class="preset-item-stats"><span class="muted">${fp(r.price)}</span><span class="${chC}">${r.change24>=0?'+':''}${r.change24.toFixed(2)}%</span><span style="color:${sigColor};font-weight:700">${r.sigVerdict} ${dirIcon}${r.sigDir==='LONG'?'L':'S'} ${r.sigScore}/8</span></div></div>`;
+        return `<div class="preset-item" onclick="selectSymbolFromPreset('${r.sym}')" style="${r.sigVerdict==='SIGNAL'?'border-color:#9be8a8':r.sigVerdict==='CHECK'?'border-color:#2a4a60':''}"><span class="preset-item-sym">${r.sym.replace(currentQuote,'')}${isNew?' <span style="color:#9be8a8;font-size:10px">● NEW</span>':''}</span><div class="preset-item-stats"><span class="muted">${fp(r.price)}</span><span class="${chC}">${r.change24>=0?'+':''}${r.change24.toFixed(2)}%</span><span style="color:${sigColor};font-weight:700">${r.sigVerdict} ${dirIcon}${r.sigDir==='LONG'?'L':'S'} ${r.sigScore}/8</span><span style="display:flex;gap:4px;margin-left:6px"><button class="scan-add-btn" onclick="addToPosFromScan('${r.sym}',event)" title="Add to positions">+Pos</button><button class="scan-add-btn watch" onclick="addToWatchFromScan('${r.sym}',event)" title="Add to watchlist">+Watch</button></span></div></div>`;
       }).join('');
     }
   }catch(e){statusEl.textContent='';resultsEl.innerHTML='';emptyEl.style.display='block';const m418=e.message&&e.message.includes('418');emptyEl.innerHTML=m418?`⚠ Binance rate-limited (HTTP 418)<br><span style="font-size:11px">Too many coins/frequent scans. Wait 2-3 min, lower coins to 30-50</span>`:`Scan error: ${e.message}<br><span style="font-size:11px">Try again</span>`;}
@@ -473,8 +567,13 @@ async function runScan(isAuto){
 }
 function onAutoScanToggle(){
   const enabled=document.getElementById('autoScanToggle').checked;
-  if(autoScanTimer){clearInterval(autoScanTimer);autoScanTimer=null;}
-  if(enabled){const minutes=parseInt(document.getElementById('autoScanInterval').value,10);runScan(true);autoScanTimer=setInterval(()=>runScan(true),minutes*60*1000);}
+  if(autoScanTimer){clearInterval(autoScanTimer);autoScanTimer=null;}stopScanCountdown();
+  if(enabled){
+    if('Notification'in window&&Notification.permission==='default'){try{Notification.requestPermission();}catch(e){}}
+    const minutes=parseInt(document.getElementById('autoScanInterval').value,10);
+    runScan(true);startScanCountdown(minutes*60);
+    autoScanTimer=setInterval(()=>{runScan(true);startScanCountdown(minutes*60);},minutes*60*1000);
+  }
 }
 
 function sma(v,p){if(v.length<p)return null;return v.slice(v.length-p).reduce((a,b)=>a+b,0)/p;}
@@ -607,6 +706,22 @@ async function fetchBTCContext(){
   }catch{return null;}
 }
 
+function notifyNewSignal(syms){
+  try{
+    const ctx=window._taAudio||(window._taAudio=new (window.AudioContext||window.webkitAudioContext)());
+    if(ctx.state==='suspended')ctx.resume();
+    [880,1175,1568].forEach((f,i)=>{const o=ctx.createOscillator();const g=ctx.createGain();o.connect(g);g.connect(ctx.destination);o.frequency.value=f;o.type='sine';const t=ctx.currentTime+i*0.12;g.gain.setValueAtTime(0.0001,t);g.gain.exponentialRampToValueAtTime(0.25,t+0.02);g.gain.exponentialRampToValueAtTime(0.0001,t+0.18);o.start(t);o.stop(t+0.2);});
+  }catch(e){}
+  if(navigator.vibrate)try{navigator.vibrate([80,40,80]);}catch(e){}
+  if('Notification'in window&&Notification.permission==='granted'){try{new Notification('TA Terminal — new signal',{body:syms.map(s=>s.replace(currentQuote,'')).join(', ')});}catch(e){}}
+}
+let _scanCountdownTimer=null;
+function startScanCountdown(seconds){
+  stopScanCountdown();let remain=seconds;const el=document.getElementById('scanCountdown');if(!el)return;
+  const tick=()=>{if(remain<=0){el.textContent='scanning…';return;}const m=Math.floor(remain/60),s=remain%60;el.textContent='next scan in '+m+':'+(s<10?'0':'')+s;remain--;};
+  tick();_scanCountdownTimer=setInterval(tick,1000);
+}
+function stopScanCountdown(){if(_scanCountdownTimer){clearInterval(_scanCountdownTimer);_scanCountdownTimer=null;}const el=document.getElementById('scanCountdown');if(el)el.textContent='';}
 async function loadPresetList(type,btnEl){
   const btns=document.querySelectorAll('.preset-btn');btns.forEach(b=>b.classList.remove('active'));
   if(activePreset===type){activePreset=null;document.getElementById('presetList').classList.add('hidden');document.getElementById('presetList').innerHTML='';document.getElementById('empty').style.display=document.getElementById('output').style.display==='block'?'none':'block';return;}
@@ -618,6 +733,7 @@ async function loadPresetList(type,btnEl){
     let data=await res.json();data=data.filter(t=>t.symbol.endsWith(currentQuote));let sorted;
     if(type==='gainers')sorted=data.sort((a,b)=>parseFloat(b.priceChangePercent)-parseFloat(a.priceChangePercent)).slice(0,50);
     else if(type==='losers')sorted=data.sort((a,b)=>parseFloat(a.priceChangePercent)-parseFloat(b.priceChangePercent)).slice(0,50);
+    else if(type==='tradfi'){const tf=data.filter(t=>TRADFI_SET.has(t.symbol.replace(currentQuote,'')));sorted=tf.sort((a,b)=>TRADFI_ORDER.indexOf(a.symbol.replace(currentQuote,''))-TRADFI_ORDER.indexOf(b.symbol.replace(currentQuote,'')));}
     else sorted=data.sort((a,b)=>parseFloat(b.quoteVolume)-parseFloat(a.quoteVolume)).slice(0,50);
     listEl.innerHTML=sorted.map(t=>{const base=t.symbol.replace(currentQuote,'');const ch=parseFloat(t.priceChangePercent);const chC=ch>=0?'up':'dn';const lastPrice=parseFloat(t.lastPrice);return `<div class="preset-item" onclick="selectSymbolFromPreset('${t.symbol}')"><span class="preset-item-sym">${base}</span><div class="preset-item-stats"><span class="muted">${fp(lastPrice)}</span><span class="${chC}">${ch>=0?'+':''}${ch.toFixed(2)}%</span><span class="muted">${fvol(parseFloat(t.quoteVolume))}</span></div></div>`;}).join('');
   }catch(e){listEl.innerHTML=`<div class="preset-loading">⚠ Load error: ${e.message}</div>`;}
@@ -734,6 +850,22 @@ async function fetchAnalysis(sym,N,lite){
 // ===================== SIGNAL SCORE =====================
 // Считает отдельно лонг- и шорт-сигнал, возвращает лучший с вердиктом.
 // Использует order-flow если есть (детальный анализ), иначе упрощённо (сканер/lite).
+function classifySkip(dq){
+  if(!dq)return null;
+  const s=dq.toLowerCase();
+  // hard block — не торговать, структурный запрет
+  if(s.includes('vertical spike')||s.includes('vertical drop')||s.includes('overbought (extreme)')||s.includes('oversold (extreme)')||s.includes('oversold extreme'))return{tag:'hard-block',label:'⛔ hard block',hint:'structural — do not trade until it cools'};
+  // ждать BTC
+  if(s.includes('btc'))return{tag:'wait-btc',label:'⏸ wait BTC',hint:'context block — clears when BTC stabilizes'};
+  // ждать объём
+  if(s.includes('dead volume'))return{tag:'wait-volume',label:'⏳ wait volume',hint:'no liquidity — wait for activity, direction may be fine'};
+  // ждать лучшую цену / нет места
+  if(s.includes('no room')||s.includes('late')||s.includes('upper third')||s.includes('lower third'))return{tag:'wait-price',label:'⏲ wait price',hint:'poor R/R here — wait for better entry'};
+  // активный памп/дамп
+  if(s.includes('active pump')||s.includes('active dump'))return{tag:'wait-reversal',label:'⏸ wait reversal',hint:'momentum still alive — wait for exhaustion'};
+  // прочее (taker, OI)
+  return{tag:'soft',label:'• soft skip',hint:'condition missing — may clear soon'};
+}
 function computeSignalScore(a){
   const d15=a.tfData['15m'],d1h=a.tfData['1h'],d4=a.tfData['4h'],d1=a.tfData['1d'];
   const hi=d1.hi50,lo=d1.lo50,price=a.price;
@@ -856,8 +988,9 @@ function computeSignalScore(a){
   // понижаем СИГНАЛ до СЛАБЫЙ (нужно подтверждение тренда старших ТФ).
   let downgradeNote=null;
   if(verdict==='SIGNAL'&&checklistScore<=4){verdict='WEAK';downgradeNote='checklist weak ('+checklistScore+'/8) — trend not confirmed';}
+  const skipClass=classifySkip(dq);
   return {dir,score,verdict,dq,rr:rr.toFixed(1),longS,shortS,longDQ,shortDQ,lite,
-    resAbove,supBelow,rsiHighTF,rsiLowTF,downgradeNote,checklistScore,voidAbove,voidBelow};
+    resAbove,supBelow,rsiHighTF,rsiLowTF,downgradeNote,checklistScore,voidAbove,voidBelow,skipClass};
 }
 
 
@@ -879,6 +1012,7 @@ function sigVerdictLine(a){
     line+=` ${s.dir} (score ${s.score}/8, R/R ~1:${s.rr})`;
   }else{
     line+=` | LONG: ${s.longDQ||s.longS+'/8'} | SHORT: ${s.shortDQ||s.shortS+'/8'}`;
+    if(s.skipClass)line+=`\n   [${s.skipClass.label}] ${s.skipClass.hint}`;
   }
   if(s.lite)line+=' [simplified, no order-flow]';
   return line;
@@ -971,6 +1105,7 @@ async function run(forcedSym){
         <div style="font-size:22px;font-weight:700;color:${vColor};letter-spacing:.05em">${s.verdict}${s.verdict!=='SKIP'?` ${dirIcon} ${s.dir}`:''}</div>
         ${s.verdict!=='SKIP'?`<div style="font-size:13px;color:#aab4b4;margin-top:6px">Signal Score: <b style="color:${vColor}">${s.score}/8</b> · R/R ~1:${s.rr}</div>`:''}
         ${s.downgradeNote?`<div style="font-size:11px;color:#ffb86b;margin-top:4px">⚠ downgraded: ${s.downgradeNote}</div>`:''}
+        ${s.verdict==='SKIP'&&s.skipClass?`<div style="display:inline-block;margin-top:6px;font-size:11px;font-weight:700;padding:2px 8px;border-radius:4px;background:${s.skipClass.tag==='hard-block'?'#3a0e0e':s.skipClass.tag.startsWith('wait')?'#241e0e':'#1a2425'};color:${s.skipClass.tag==='hard-block'?'#ff9b9b':s.skipClass.tag.startsWith('wait')?'#ffb86b':'#7a8a8b'}">${s.skipClass.label}</div><div style="font-size:10px;color:#5a6a6b;margin-top:3px">${s.skipClass.hint}</div>`:''}
         ${s.verdict==='SKIP'?`<div style="font-size:11px;color:#ff9b9b;margin-top:6px;line-height:1.6">${s.longDQ?`▲ LONG: ${s.longDQ}`:`▲ LONG: ${s.longS}/8 pts`}<br>${s.shortDQ?`▼ SHORT: ${s.shortDQ}`:`▼ SHORT: ${s.shortS}/8 pts`}</div>`:''}
         ${s.lite?'<div style="font-size:10px;color:#5a6a6b;margin-top:4px">simplified calc (no order-flow)</div>':`<div style="font-size:10px;color:#5a6a6b;margin-top:4px">long ${s.longS}/8 · short ${s.shortS}/8</div>`}
       </div>`;
@@ -1051,10 +1186,18 @@ async function copyText(){
   const b=document.getElementById('copyBtn');b.textContent='✓ COPIED';b.className='copy-btn ok';setTimeout(()=>{b.textContent='COPY SUMMARY';b.className='copy-btn';},2500);
 }
 
+const SETTINGS_KEY='ta_terminal_settings';
+function saveSettings(){try{const s={scanLimit:val('scanLimit'),scanMinVol:val('scanMinVol'),scanThreshold:val('scanThreshold'),autoScanInterval:val('autoScanInterval'),scanModeSel:val('scanModeSel'),nCandles:val('nCandles'),soundToggle:document.getElementById('soundToggle')?document.getElementById('soundToggle').checked:true,scanPool};localStorage.setItem(SETTINGS_KEY,JSON.stringify(s));}catch(e){}}
+function val(id){const el=document.getElementById(id);return el?el.value:null;}
+function restoreSettings(){try{const s=JSON.parse(localStorage.getItem(SETTINGS_KEY)||'{}');if(s.scanPool)setScanPool(s.scanPool);for(const[k,v]of Object.entries(s)){if(k==='scanPool')continue;if(k==='soundToggle'){const el=document.getElementById('soundToggle');if(el)el.checked=v;continue;}const el=document.getElementById(k);if(el&&v!=null)el.value=v;}}catch(e){}}
+// автосохранение при изменении любого контрола настроек
+['scanLimit','scanMinVol','scanThreshold','autoScanInterval','scanModeSel','nCandles','soundToggle'].forEach(id=>{const el=document.getElementById(id);if(el)el.addEventListener('change',saveSettings);});
 renderRecent();
 updatePosCount();
+updateWatchCount();
 loadSymbols();
 setScanPool('volume');
+restoreSettings();
 </script>
 </body>
 </html>
