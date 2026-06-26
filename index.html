@@ -326,14 +326,18 @@ function addToWatchFromScan(sym,ev){
   if(ev)ev.stopPropagation();
   const w=getWatch();
   const meta=window._scanMeta&&window._scanMeta[sym]?window._scanMeta[sym]:{};
-  w[sym]={addedAt:Date.now(),sigPrice:meta.price||null,dir:meta.sigDir||null,verdict:meta.sigVerdict||null,score:meta.sigScore||null,resAbove:meta.resAbove||null,supBelow:meta.supBelow||null,note:meta.note||null};
+  // для watch берём ОСМЫСЛЕННОЕ направление слежки (watchDir), не сырое dir
+  const wd=meta.watchDir||meta.sigDir||'LONG';
+  w[sym]={addedAt:Date.now(),sigPrice:meta.price||null,dir:wd,verdict:meta.sigVerdict||null,score:meta.sigScore||null,resAbove:meta.resAbove||null,supBelow:meta.supBelow||null,note:meta.watchReason||meta.note||null};
   setWatch(w);flashBtn(ev&&ev.target);
 }
 function addToPosFromScan(sym,ev){
   if(ev)ev.stopPropagation();
   const meta=window._scanMeta&&window._scanMeta[sym]?window._scanMeta[sym]:{};
   const positions=getPositions();
-  positions[sym]={side:meta.sigDir==='SHORT'?'short':'long',entry:meta.price||null,addedAt:Date.now()};
+  // для позиции берём направление сигнала если он есть, иначе watchDir
+  const pd=(meta.sigVerdict==='SIGNAL'||meta.sigVerdict==='CHECK')?meta.sigDir:(meta.watchDir||meta.sigDir||'long');
+  positions[sym]={side:(pd==='SHORT')?'short':'long',entry:meta.price||null,addedAt:Date.now()};
   setPositions(positions);flashBtn(ev&&ev.target);
 }
 function flashBtn(btn){if(!btn)return;const o=btn.textContent;btn.textContent='✓';setTimeout(()=>{btn.textContent=o;},1200);}
@@ -395,20 +399,25 @@ async function renderWatch(){
   sec.style.display='block';
   listEl.innerHTML=keys.map(sym=>{
     const it=w[sym];const date=new Date(it.addedAt);
-    const dirBadge=it.dir?`<span class="pos-side ${it.dir==='SHORT'?'short':'long'}">${it.dir}</span>`:'';
-    let levels='';
-    if(it.dir==='SHORT'&&it.supBelow)levels=`target ↓ ${fmtPriceSmart(it.supBelow)}`;
-    else if(it.dir==='LONG'&&it.resAbove)levels=`target ↑ ${fmtPriceSmart(it.resAbove)}`;
+    const isShort=it.dir==='SHORT';
+    const dirBadge=it.dir?`<span class="pos-side ${isShort?'short':'long'}">${it.dir}</span>`:'';
+    // понятное объяснение что мы ждём
+    const plan=isShort?'waiting for price to FALL':'waiting for price to RISE';
+    let target='';
+    if(isShort&&it.supBelow)target=`<span style="color:#ff9b9b">target ↓ ${fmtPriceSmart(it.supBelow)}</span>`;
+    else if(!isShort&&it.resAbove)target=`<span style="color:#9be8a8">target ↑ ${fmtPriceSmart(it.resAbove)}</span>`;
+    const why=it.note?it.note:plan;
     return `<div class="pos-card" id="watchcard-${sym}" style="border-color:#1e3a3a">
       <div class="pos-head">
-        <div><span class="pos-sym">${sym}</span>${dirBadge}${it.score?`<span style="color:#3a4e50;font-size:11px;margin-left:6px">${it.verdict||''} ${it.score}/8</span>`:''}</div>
+        <div><span class="pos-sym">${sym.replace(currentQuote,'')}</span>${dirBadge}${it.score?`<span style="color:#3a4e50;font-size:11px;margin-left:6px">${it.verdict||''} ${it.score}/8</span>`:''}</div>
         <div style="display:flex;gap:6px">
-          <button class="pos-analyze-btn" onclick="event.stopPropagation(); openFromPositions('${sym}')">📊</button>
-          <button class="pos-analyze-btn" style="border-color:#2a4a40;color:#9be8a8" onclick="event.stopPropagation(); promoteWatchToPos('${sym}')" title="Move to positions">→Pos</button>
-          <button class="pos-remove" onclick="event.stopPropagation(); removeWatch('${sym}')">✕</button>
+          <button class="pos-analyze-btn" onclick="event.stopPropagation(); openFromPositions('${sym}')" title="Open full analysis">📊</button>
+          <button class="pos-analyze-btn" style="border-color:#2a4a40;color:#9be8a8" onclick="event.stopPropagation(); promoteWatchToPos('${sym}')" title="I entered — move to my positions">→Pos</button>
+          <button class="pos-remove" onclick="event.stopPropagation(); removeWatch('${sym}')" title="Remove from watchlist">✕</button>
         </div>
       </div>
-      <div class="pos-meta">watched since ${date.toLocaleString('en-US')}${levels?' · '+levels:''} <span id="watchlive-${sym}" style="color:#3a4e50">· loading...</span></div>
+      <div style="font-size:11px;color:#7a8a8a;margin-top:4px">📋 Plan: <strong style="color:${isShort?'#ff9b9b':'#9be8a8'}">${plan}</strong>${target?' · '+target:''}</div>
+      <div class="pos-meta">added ${date.toLocaleString('en-US')} <span id="watchlive-${sym}" style="color:#3a4e50">· loading...</span></div>
       <div class="pos-pnl" id="watchchg-${sym}"></div>
     </div>`;
   }).join('');
@@ -420,11 +429,13 @@ async function renderWatch(){
     liveEl.innerHTML=`· now <strong style="color:#d8e0e0">${fmtPriceSmart(price)}</strong>`;
     if(it.sigPrice){
       const chg=(price-it.sigPrice)/it.sigPrice*100;
-      // для шорта выгодно падение, для лонга рост — показываем «в твою сторону»
-      const favorable=it.dir==='SHORT'?-chg:chg;
-      const color=favorable>=0?'#9be8a8':'#ff9b9b';const arrow=favorable>=0?'▲ in your favor':'▼ against';
-      chgEl.innerHTML=`<span style="color:${color}">since signal: ${chg>=0?'+':''}${chg.toFixed(2)}% <span style="font-size:10px">${arrow}</span></span><span style="color:#3a4e50;font-weight:400"> · signal @ ${fmtPriceSmart(it.sigPrice)}</span>`;
-    }else{chgEl.innerHTML='<span style="color:#3a4e50">no signal price stored</span>';}
+      const isShort=it.dir==='SHORT';
+      // выгодно: для шорта падение, для лонга рост
+      const favorable=isShort?-chg:chg;
+      const color=favorable>=0?'#9be8a8':'#ff9b9b';
+      const msg=favorable>=0?(isShort?'✓ falling — setup developing':'✓ rising — setup developing'):(isShort?'✗ rising — wait, not yet':'✗ falling — wait, not yet');
+      chgEl.innerHTML=`<span style="color:${color};font-weight:600">${msg}</span><span style="color:#3a4e50;font-weight:400;font-size:11px"> · ${chg>=0?'+':''}${chg.toFixed(2)}% from watch price ${fmtPriceSmart(it.sigPrice)}</span>`;
+    }else{chgEl.innerHTML='<span style="color:#3a4e50">tracking price...</span>';}
   }
 }
 function promoteWatchToPos(sym){
@@ -541,7 +552,7 @@ async function runScan(isAuto){
         const pass=sig&&(sig.verdict==='SIGNAL'||sig.verdict==='CHECK'||(scanMode==='all'&&sig.verdict==='WEAK'))&&a.score>=threshold;
         if(pass){
           results.push({sym,score:a.score,total:a.checks.length,price:a.price,change24:a.change24,scoreLabel:a.scoreLabel,sigVerdict:sig.verdict,sigScore:sig.score,sigDir:sig.dir});
-          if(!window._scanMeta)window._scanMeta={};window._scanMeta[sym]={price:a.price,sigVerdict:sig.verdict,sigScore:sig.score,sigDir:sig.dir,resAbove:sig.resAbove,supBelow:sig.supBelow,note:sig.mainSignal||null};
+          if(!window._scanMeta)window._scanMeta={};window._scanMeta[sym]={price:a.price,sigVerdict:sig.verdict,sigScore:sig.score,sigDir:sig.dir,watchDir:sig.watchDir,watchReason:sig.watchReason,resAbove:sig.resAbove,supBelow:sig.supBelow,note:sig.mainSignal||null};
           if(isAuto&&!knownStrongSetups.has(sym))newlyStrong.push(sym);
           knownStrongSetups.add(sym);
         }
@@ -989,8 +1000,21 @@ function computeSignalScore(a){
   let downgradeNote=null;
   if(verdict==='SIGNAL'&&checklistScore<=4){verdict='WEAK';downgradeNote='checklist weak ('+checklistScore+'/8) — trend not confirmed';}
   const skipClass=classifySkip(dq);
+  // watchDir — какое направление ИМЕЕТ СМЫСЛ отслеживать (для watchlist).
+  // Для SIGNAL/WEAK это просто dir. Для SKIP выбираем «зреющую» сторону:
+  // перегрет/RSI высокий/у потолка → ждём ШОРТ; перепродан/у дна → ждём ЛОНГ.
+  let watchDir=dir, watchReason='';
+  if(verdict==='SKIP'){
+    const leanShort=(rsiHighExtreme||absExtremeHigh||inUpper||(d1h.r6!=null&&d1h.r6>=70)||bearRev);
+    const leanLong=(rsiLowExtreme||absExtremeLow||inLower||(d1h.r6!=null&&d1h.r6<=30)||bullRev);
+    if(leanShort&&!leanLong){watchDir='SHORT';watchReason='overheated — watching for top/reversal down';}
+    else if(leanLong&&!leanShort){watchDir='LONG';watchReason='oversold — watching for bottom/bounce up';}
+    else {watchDir=shortS>=longS?'SHORT':'LONG';watchReason='setup maturing — watching both sides';}
+  } else {
+    watchReason=dir==='SHORT'?'signal to short':'signal to long';
+  }
   return {dir,score,verdict,dq,rr:rr.toFixed(1),longS,shortS,longDQ,shortDQ,lite,
-    resAbove,supBelow,rsiHighTF,rsiLowTF,downgradeNote,checklistScore,voidAbove,voidBelow,skipClass};
+    resAbove,supBelow,rsiHighTF,rsiLowTF,downgradeNote,checklistScore,voidAbove,voidBelow,skipClass,watchDir,watchReason};
 }
 
 
@@ -1083,7 +1107,7 @@ async function run(forcedSym){
     let fHtml='';
     if(fundingRate!=null){const fc=Math.abs(fundingRate)>0.1?'crit':Math.abs(fundingRate)>0.05?'warn':'';const fd=fundingRate>0.05?' (longs pay)':fundingRate<-0.05?' (shorts pay)':'';fHtml=`<span>Funding: <span class="${fc}">${fundingRate>=0?'+':''}${fundingRate.toFixed(4)}%</span><span style="color:#3a4e50;font-size:10px">${fd}</span></span>`;}
     const positions=getPositions();const posData=positions[sym];const sessionColor=session.overlap?'#9be8a8':session.sessions[0].includes('Dead')?'#ff9b9b':'#ffb86b';
-    if(!window._scanMeta)window._scanMeta={};if(a.signal)window._scanMeta[sym]={price:price,sigVerdict:a.signal.verdict,sigScore:a.signal.score,sigDir:a.signal.dir,resAbove:a.signal.resAbove,supBelow:a.signal.supBelow,note:null};
+    if(!window._scanMeta)window._scanMeta={};if(a.signal)window._scanMeta[sym]={price:price,sigVerdict:a.signal.verdict,sigScore:a.signal.score,sigDir:a.signal.dir,watchDir:a.signal.watchDir,watchReason:a.signal.watchReason,resAbove:a.signal.resAbove,supBelow:a.signal.supBelow,note:null};
     tb.innerHTML=`
       <div style="width:100%;display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
         <div><span class="ticker-sym">${sym}</span><span class="ticker-price ${chC}" style="margin-left:12px">${fp(price)}</span><span class="${chC}" style="margin-left:8px;font-size:13px">${chS}${fn(change24)}%</span></div>
