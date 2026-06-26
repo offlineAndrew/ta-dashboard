@@ -1083,6 +1083,7 @@ async function run(forcedSym){
     let fHtml='';
     if(fundingRate!=null){const fc=Math.abs(fundingRate)>0.1?'crit':Math.abs(fundingRate)>0.05?'warn':'';const fd=fundingRate>0.05?' (longs pay)':fundingRate<-0.05?' (shorts pay)':'';fHtml=`<span>Funding: <span class="${fc}">${fundingRate>=0?'+':''}${fundingRate.toFixed(4)}%</span><span style="color:#3a4e50;font-size:10px">${fd}</span></span>`;}
     const positions=getPositions();const posData=positions[sym];const sessionColor=session.overlap?'#9be8a8':session.sessions[0].includes('Dead')?'#ff9b9b':'#ffb86b';
+    if(!window._scanMeta)window._scanMeta={};if(a.signal)window._scanMeta[sym]={price:price,sigVerdict:a.signal.verdict,sigScore:a.signal.score,sigDir:a.signal.dir,resAbove:a.signal.resAbove,supBelow:a.signal.supBelow,note:null};
     tb.innerHTML=`
       <div style="width:100%;display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
         <div><span class="ticker-sym">${sym}</span><span class="ticker-price ${chC}" style="margin-left:12px">${fp(price)}</span><span class="${chC}" style="margin-left:8px;font-size:13px">${chS}${fn(change24)}%</span></div>
@@ -1090,7 +1091,10 @@ async function run(forcedSym){
       </div>
       <div style="width:100%;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
         <div class="ticker-stats"><span>24h Volume: <strong style="color:#d8e0e0">${fvol(vol24)} USDT</strong></span>${fHtml}</div>
+        <div style="display:flex;align-items:center;gap:10px">
         <label class="pos-toggle"><input type="checkbox" id="posCheckbox" ${posData?'checked':''} onchange="onPosToggle('${sym}')"> In position ${posData?`<select id="posSide" onchange="onPosSideChange('${sym}')" style="background:#0e1516;color:#9be8a8;border:1px solid #1e2a2b;border-radius:3px;font-size:10px;padding:2px"><option value="long" ${posData.side==='long'?'selected':''}>long</option><option value="short" ${posData.side==='short'?'selected':''}>short</option></select>`:''}</label>
+        <button class="scan-add-btn watch" style="font-size:11px;padding:4px 9px" onclick="addToWatchFromScan('${sym}',event)" title="Add to watchlist">👁 +Watch</button>
+        </div>
       </div>
       ${posData?`<div class="pos-fields" style="width:100%;margin-top:10px;padding-top:10px;border-top:1px solid #1a2425"><div class="pos-field entry"><label>ENTRY <span style="cursor:pointer;color:#9be8a8;text-decoration:underline" onclick="updatePosField('${sym}','entry','${price}')">⏎ cur.price</span></label><input type="text" inputmode="decimal" value="${posData.entry||''}" placeholder="0.000" onchange="updatePosField('${sym}','entry',this.value)"></div><div class="pos-field stop"><label>STOP</label><input type="text" inputmode="decimal" value="${posData.stop||''}" placeholder="0.000" onchange="updatePosField('${sym}','stop',this.value)"></div><div class="pos-field tp1"><label>TP 1</label><input type="text" inputmode="decimal" value="${posData.tp1||''}" placeholder="0.000" onchange="updatePosField('${sym}','tp1',this.value)"></div><div class="pos-field tp2"><label>TP 2</label><input type="text" inputmode="decimal" value="${posData.tp2||''}" placeholder="0.000" onchange="updatePosField('${sym}','tp2',this.value)"></div></div>`:''}
       ${posData&&posData.entry?`<div class="pos-pnl" style="width:100%;margin-top:8px">${(()=>{const pnl=calcPnlPct(posData.side,posData.entry,price);if(pnl==null)return'';const color=pnl>=0?'#9be8a8':'#ff9b9b';return `<span style="color:${color}">PnL: ${pnl>=0?'+':''}${pnl.toFixed(2)}%</span>`;})()}</div>`:''}`;
