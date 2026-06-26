@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="ru">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -757,10 +757,10 @@ function computeSignalScore(a){
   const rsiLowVal=rsiLowTF==='15M'?d15.r6:rsiLowTF==='4H'?d4.r6:rsiLowTF==='1D'?d1.r6:null;
   // RSI 15M ровно 0 или 100 = отвесное движение ПРЯМО СЕЙЧАС, не разворотная точка.
   // Дисквалит оба направления — ждать стабилизации (зелёной/красной свечи).
-  const absExtremeLow=(d15.r6!=null&&d15.r6<=1)||(d1h.r6!=null&&d1h.r6<=1)||(d4.r6!=null&&d4.r6<=1)||(d1.r6!=null&&d1.r6<=1);
-  const absExtremeHigh=(d15.r6!=null&&d15.r6>=99)||(d1h.r6!=null&&d1h.r6>=99)||(d4.r6!=null&&d4.r6>=99)||(d1.r6!=null&&d1.r6>=99);
-  const absExtremeLowTF=(d15.r6!=null&&d15.r6<=1)?'15M':(d1h.r6!=null&&d1h.r6<=1)?'1H':(d4.r6!=null&&d4.r6<=1)?'4H':'1D';
-  const absExtremeHighTF=(d15.r6!=null&&d15.r6>=99)?'15M':(d1h.r6!=null&&d1h.r6>=99)?'1H':(d4.r6!=null&&d4.r6>=99)?'4H':'1D';
+  const absExtremeLow=(d15.r6!=null&&d15.r6<=3)||(d1h.r6!=null&&d1h.r6<=3)||(d4.r6!=null&&d4.r6<=3)||(d1.r6!=null&&d1.r6<=3);
+  const absExtremeHigh=(d15.r6!=null&&d15.r6>=97)||(d1h.r6!=null&&d1h.r6>=97)||(d4.r6!=null&&d4.r6>=97)||(d1.r6!=null&&d1.r6>=97);
+  const absExtremeLowTF=(d15.r6!=null&&d15.r6<=3)?'15M':(d1h.r6!=null&&d1h.r6<=3)?'1H':(d4.r6!=null&&d4.r6<=3)?'4H':'1D';
+  const absExtremeHighTF=(d15.r6!=null&&d15.r6>=97)?'15M':(d1h.r6!=null&&d1h.r6>=97)?'1H':(d4.r6!=null&&d4.r6>=97)?'4H':'1D';
   const vol15=d15.volRatio;
   // order-flow (может отсутствовать в lite)
   const tBuy=a.takerDelta?parseInt(a.takerDelta.buyPct):null;
@@ -790,7 +790,8 @@ function computeSignalScore(a){
   // BTC обвал: 1H+4H bearish И 24h < -2% — лонговать бета-альты опасно (нож в обвале)
   const isMetalOrStable=/PAXG|XAUT|XAG|GOLD|TUSD|USDC|FDUSD/.test(a.sym||'');
   const btcDumping=!isMetalOrStable&&a.btcCtx&&a.btcCtx.btcBearish&&a.btcCtx.change24!=null&&a.btcCtx.change24<-2;
-  if(absExtremeLow)longDQ='RSI '+absExtremeLowTF+'≈0 — vertical drop, wait for green candle';
+  if(absExtremeHigh)longDQ='RSI '+absExtremeHighTF+'≈100 — vertical spike, wait for red candle';
+  else if(absExtremeLow)longDQ='RSI '+absExtremeLowTF+'≈0 — vertical drop, wait for green candle';
   else if(btcDumping)longDQ='BTC dumping ('+a.btcCtx.change24.toFixed(1)+'%) — alt long risky, wait for BTC bottom';
   else if(activeDump)longDQ='active dump (shorts building, abnormal volume) — wait for bottom';
   else if(rsiHighExtreme)longDQ='RSI '+rsiHighTF+'='+rsiHighVal.toFixed(0)+' overbought (extreme)';
@@ -815,7 +816,8 @@ function computeSignalScore(a){
   const activePump=oiDemand&&(vol4hAnomaly||d15.summary.lcType.includes('bullish marubozu'))&&d1.r6>=80;
   let shortS=0, shortDQ=null;
   const btcPumping=!isMetalOrStable&&a.btcCtx&&a.btcCtx.btcBullish&&a.btcCtx.change24!=null&&a.btcCtx.change24>2;
-  if(absExtremeHigh)shortDQ='RSI '+absExtremeHighTF+'≈100 — vertical spike, wait for red candle';
+  if(absExtremeLow)shortDQ='RSI '+absExtremeLowTF+'≈0 — oversold extreme, wait for bounce';
+  else if(absExtremeHigh)shortDQ='RSI '+absExtremeHighTF+'≈100 — vertical spike, wait for red candle';
   else if(btcPumping)shortDQ='BTC pumping (+'+a.btcCtx.change24.toFixed(1)+'%) — alt short risky, wait for BTC top';
   else if(activePump)shortDQ='active pump (OI rising, abnormal volume) — wait for reversal';
   else if(rsiLowExtreme)shortDQ='RSI '+rsiLowTF+'='+rsiLowVal.toFixed(0)+' oversold (extreme)';
